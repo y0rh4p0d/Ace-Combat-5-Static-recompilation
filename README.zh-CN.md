@@ -356,7 +356,39 @@ python -m cnjp port --map addr_map.json --config config --out config/cnjp --regi
 - 自动把 SDL3 和 pthread 拷到 `ac5.exe` 旁边（按架构选对），程序在任意目录都能直接双击运行
 - `--data` 会自动搜索常见输出目录；失败时打印尝试过的所有绝对路径
 - 新增 `tools/build_all.ps1` 一键构建脚本、`tools/run.ps1` 一键启动脚本、`tools/export_release.ps1` 打包脚本
+- 新增 `tools/capture.ps1` 截图脚本（见下）
 - 缺少 `ps2_image.bin` 时快速报错并说明原因，而不是打开一个一直黑屏的窗口
+
+### 6. 截图脚本 `tools/capture.ps1`
+
+排查画面问题时最麻烦的一件事是**截图**：游戏窗口必须显示出来才能截，而终端窗口
+又会挡住它，截出来的经常是终端而不是游戏。
+
+这个脚本改用 `PrintWindow`，让**窗口自己把画面画进位图**，因此**不需要窗口可见**，
+也不会被任何东西遮挡：
+
+```powershell
+# 游戏开着并停在想记录的画面，然后另开一个终端运行：
+pwsh -File tools\capture.ps1 -Out sky-on.png
+
+# 换个设置再截一张，用于对照：
+$env:PS2_RN_SKY='0'
+pwsh -File tools\run.ps1 -Region cnjp -Iso "...\ac5cnjp.iso"
+# 停在同一个画面，然后：
+pwsh -File tools\capture.ps1 -Out sky-off.png
+Remove-Item Env:PS2_RN_SKY
+```
+
+参数：
+
+| 参数 | 说明 |
+|---|---|
+| `-Out` | 输出路径，默认 `work\shots\cap_<时间戳>.png` |
+| `-MaxWidth` | 超过此宽度就缩放，默认 1280，`0` 表示不缩放 |
+| `-Screen` | 改用屏幕截图（会先隐藏其他窗口）。**只在 `PrintWindow` 截出黑图时使用**，脚本会告诉你是否还有东西挡在前面 |
+
+**注意：** 这个脚本**只移动窗口、不改动游戏**。如果 `PrintWindow` 在某些驱动上
+截出黑图，用 `-Screen`，它会隐藏所有其他窗口、把游戏提到前面、截图、再恢复。
 
 ---
 
