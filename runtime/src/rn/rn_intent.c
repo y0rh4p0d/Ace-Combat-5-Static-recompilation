@@ -172,6 +172,24 @@ static u32 intent_addr_of(u32 us) {
     return 0;
 }
 
+/* Confirm a resolved address really holds the function its entry describes.
+ *
+ * The per-site checks in rn_intent_init() compare two words against the loaded
+ * code, and two words is not much: several of these functions open with the same
+ * prologue, so a check can pass on the wrong function, install a hook there, and
+ * make the renderer draw nonsense.  That is worse than not hooking at all, because
+ * the emulated path worked.  Each site is therefore checked against its full
+ * recorded signature, and one that fails is left to the emulated path.
+ */
+static int intent_site_ok(u32 us_addr) {
+    for (size_t i = 0; i < N_INTENT_ADDRS; i++) {
+        if (intent_addrs[i].us != us_addr) continue;
+        if (!intent_resolved[i]) return 0;
+        return intent_sig_ok(intent_resolved[i], &intent_addrs[i]);
+    }
+    return 0;
+}
+
 /* The address table is written in ascending US address order and already grouped
  * by region, and within a region every address moves by the same amount.  That is
  * what makes resolution tractable: rather than trying to identify each function
@@ -945,8 +963,7 @@ void rn_intent_init(void) {
                               "rn-intents") < 0)
             ps2_log("rn: the hook layer refused 2D group writer %08X", groups[i].addr);
     }
-    if (ps2_image_word(F_SKY_DOME) == sky_dome_w[0] && ps2_image_word(F_SKY_DOME + 4u) == sky_dome_w[1]
-        && ps2_image_word(F_SKY_HAZE) == sky_haze_w[0] && ps2_image_word(F_SKY_HAZE + 8u) == sky_haze_w[1]) {
+    if (intent_site_ok(F_SKY_DOME_US) && intent_site_ok(F_SKY_HAZE_US)) {
         if (ps2_hook_after(F_SKY_DOME, tap_sky_dome, NULL, 100, "rn-intents") < 0
             || ps2_hook_before(F_SKY_HAZE, tap_sky_haze_enter, NULL, 100, "rn-intents") < 0
             || ps2_hook_after(F_SKY_HAZE, tap_sky_haze, NULL, 100, "rn-intents") < 0)
@@ -955,8 +972,7 @@ void rn_intent_init(void) {
         ps2_log("rn: the sky writers %08X / %08X do not match; not recorded",
                 F_SKY_DOME, F_SKY_HAZE);
     }
-    if (ps2_image_word(F_CLIP_TRI) == clip_tri_w[0] && ps2_image_word(F_CLIP_TRI + 4u) == clip_tri_w[1]
-        && ps2_image_word(F_DRAW_FAN) == draw_fan_w[0] && ps2_image_word(F_DRAW_FAN + 4u) == draw_fan_w[1]) {
+    if (intent_site_ok(F_CLIP_TRI_US) && intent_site_ok(F_DRAW_FAN_US)) {
         if (ps2_hook_before(F_CLIP_TRI, tap_clip_tri, NULL, 100, "rn-intents") < 0
             || ps2_hook_after(F_DRAW_FAN, tap_draw_fan, NULL, 100, "rn-intents") < 0)
             ps2_log("rn: the hook layer refused the clip-and-draw taps");
