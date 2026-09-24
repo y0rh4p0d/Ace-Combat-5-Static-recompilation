@@ -1,5 +1,5 @@
 {
- "seed_ida": 7217,
+ "seed_ida": 7220,
  "seed_jal_extra": 110,
  "seed_switch_extra": 2194,
  "seed_ctor_extra": 0,
@@ -60,12 +60,12 @@
   "00399550"
  ],
  "partition_rounds": 11,
- "functions": 10670,
- "covered_bytes": 2663276,
+ "functions": 10673,
+ "covered_bytes": 2663464,
  "text_bytes": 2725456,
- "coverage": 97.71854691471812,
+ "coverage": 97.72544484299141,
  "generated_files": 43,
- "generated_functions": 10670,
+ "generated_functions": 10673,
  "unhandled": {},
  "warnings": [],
  "symbol_provenance": {
@@ -16274,10 +16274,6 @@
   [
    3541688,
    3542848
-  ],
-  [
-   3543648,
-   3543836
   ],
   [
    3544368,

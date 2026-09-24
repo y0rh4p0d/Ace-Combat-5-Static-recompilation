@@ -85,11 +85,52 @@ def cmd_port(args):
     log(f"address map: {amap.stats()}")
 
     # ---- ida_db.json -----------------------------------------------------
-    ida = port_ida_db(_load(os.path.join(cfg, "ida_db.json")), amap, log)
+    ida_src = _load(os.path.join(cfg, "ida_db.json"))
+    ida = port_ida_db(ida_src, amap, log)
+
+    # Function entries the map cannot place, declared by hand because the build was
+    # seen calling them and no derivation finds them (see the file's own comment).
+    recovered = os.path.join(out, "recovered_funcs.json")
+    if os.path.exists(recovered):
+        rec = {k: v for k, v in _load(recovered).items()
+               if not k.startswith("_") and isinstance(v, dict)}
+        known = {f["ea"] for f in ida["functions"]}
+        added = []
+        for tgt_s, spec in sorted(rec.items()):
+            t = int(tgt_s, 16)
+            if t in known:
+                continue
+            ref = int(spec["ref"], 16)
+            ida["functions"].append({
+                "ea": t, "name": "sub_%X" % t,
+                "chunks": [[t, t + 4]],
+                "recovered_from": "0x%08X" % ref,
+                "why": spec.get("why", ""),
+            })
+            added.append(t)
+        if added:
+            log("recovered_funcs: +%d function(s): %s"
+                % (len(added), " ".join("%08X" % a for a in added)))
     _save(os.path.join(out, "ida_db.json"), ida)
 
-    # ---- ida_seeds.json --------------------------------------------------
-    seeds = port_seeds(_load(os.path.join(cfg, "ida_seeds.json")), amap, log)
+    seeds = port_seeds(_load(os.path.join(cfg, "ida_seeds.json")), amap, log,
+                       source_elf=args.source or "", target_elf=args.target or "")
+    # A recovered entry must also be seeded, or the recompiler will not create it
+    # even though the table lists it: the table says what the target's functions are,
+    # the seeds say which addresses to start emitting from.
+    if os.path.exists(recovered):
+        added = []
+        for tgt_s in sorted(rec):
+            t = int(tgt_s, 16)
+            if not any(t in seeds[k] for k in seeds):
+                # flow is the broadest list and is unioned into the seed set.
+                seeds.setdefault("flow", []).append(t)
+                added.append(t)
+        for key in seeds:
+            seeds[key] = sorted(set(seeds[key]))
+        if added:
+            log("recovered_funcs: seeded %s"
+                % " ".join("%08X" % a for a in sorted(added)))
     _save(os.path.join(out, "ida_seeds.json"), seeds)
 
     # ---- symbol tables ---------------------------------------------------
@@ -160,7 +201,13 @@ def cmd_port(args):
             "%d unresolved code ranges.\n\n"
             "`pac_names.txt` is deliberately absent: it names members inside\n"
             "`DATA.PAC` by name, and those names are the same in every region,\n"
-            "so the recompiled build reads `config/pac_names.txt` directly.\n"
+            "so the recompiled build reads `config/pac_names.txt` directly.\n\n"
+            "`recovered_funcs.json` is the exception to the rule above: it is\n"
+            "written by hand, not generated.  It lists function entries in this\n"
+            "executable that the address map cannot place, found at run time when\n"
+            "the build reported an indirect branch into code no function claimed.\n"
+            "The file itself explains each entry and the evidence for it.  The\n"
+            "port reads it if present and leaves it alone.\n"
             % (args.region, amap.blob["target_elf"], len(amap.intervals),
                len(amap.overrides), len(amap.unresolved)))
     log(f"wrote {out}/")
@@ -187,6 +234,10 @@ def main(argv=None):
     p.add_argument("--config", required=True, help="source config directory")
     p.add_argument("--out", required=True, help="destination config directory")
     p.add_argument("--region", default="cnjp", help="label recorded in the output")
+    # The map records only the input file names, so give the port the real paths
+    # when the seed realignment needs to compare the two executables' code.
+    p.add_argument("--source", help="reference ELF, for seed realignment")
+    p.add_argument("--target", help="target ELF, for seed realignment")
     p.add_argument("-q", "--quiet", action="store_true")
     p.set_defaults(func=cmd_port)
 

@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "Function entries the CN/JP build calls but that the address map cannot place.",
+    "",
+    "Each was found at run time: the build reports an indirect branch into the",
+    "address with the call context (ra, sp, gp, registers), and 'why' records what",
+    "that context proved.  They are added as function entries in the target so the",
+    "recompiler emits them, because a call through a function pointer appears in no",
+    "call instruction and so cannot be recovered from the call graph either.",
+    "",
+    "They exist because the two builds disagree about function boundaries in the",
+    "text/font region (around 0x003601xx) badly enough that several reference",
+    "functions map onto one target address.  Those functions are a family of",
+    "near-identical small helpers, so matching their code cannot separate them; the",
+    "addresses have to be stated, not derived.",
+    "",
+    "Add an entry here when a build reports:",
+    "    ==== indirect branch to XXXXXXXX, which no recompiled function claims ====",
+    "and the address is a plausible function entry (a frame prologue) in the target.",
+    "The warning names the register holding the target and the return address, which",
+    "together identify the caller in the reference binary.",
+    "",
+    "target  : the address in the target (CN/JP) build that must become a function",
+    "ref     : a reference (US) function whose code matches it, so the recompiler can",
+    "          name it and the port can carry the entry across",
+    "why     : the evidence, kept so a later reader does not have to re-derive it"
+  ],
+
+  "0x00361260": {
+    "ref": "0x00360F20",
+    "why": "reported as an indirect branch 285 times; the caller is target 0035F748 (reference 0035F408), which does 'lw r2, gp+0xDAC8' then 'jalr r2', so the address comes from a data pointer and is in no call instruction. The reference twin is a frame prologue with the same ten-instruction opening; the map instead places it on 003611A4."
+  },
+
+  "0x0028B870": {
+    "ref": "0x0028B800",
+    "why": "reported as an indirect branch target with the same call context as 00361260. Sits inside the mapped function 0028B800, whose reference counterpart has different bounds; the target's own entry is missing from the table."
+  },
+
+  "0x0028B890": {
+    "ref": "0x0028B800",
+    "why": "same as 0028B870: a second entry inside mapped function 0028B800 that the table does not have."
+  }
+}

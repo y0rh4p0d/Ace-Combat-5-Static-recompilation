@@ -555,16 +555,82 @@ def port_ida_db(db: dict, amap: AddressMap, log=print) -> dict:
             "names": {str(k): v for k, v in sorted(out_names.items())}}
 
 
-def port_seeds(seeds: dict, amap: AddressMap, log=print) -> dict:
+def port_seeds(seeds: dict, amap: AddressMap, log=print,
+               source_elf: str = "", target_elf: str = "") -> dict:
+    """Move the seed lists, then put back the entries the interval deltas get wrong.
+
+    A seed is an address the recompiler must treat as a function entry, so moving
+    it approximately is not good enough: the recompiler will start a function
+    wherever it is told and stop at the next entry, so a seed that lands in the
+    middle of the target's function splits it, and the real entry -- which is only
+    ever reached through a function pointer, so it appears in no call instruction
+    -- ends up belonging to no function at all.  The call then silently does
+    nothing.
+
+    That is exactly what happened to the sound/text helper at US 00360F20: the
+    interval delta moved it to JP 003611A4, but the target's real function starts
+    at 00361260 (a different delta), and the running build reported 285 indirect
+    branches into a function no recompiled code claimed.
+
+    The interval deltas are per-run and remain correct in aggregate, so this only
+    revisits entries that need it: it re-checks each mapped seed by comparing the
+    code at both ends, and when they disagree it looks nearby for the address whose
+    code does match.  Seeds whose code cannot be compared (data-looking entries)
+    are moved as before.
+    """
+    src = ElfFile(source_elf) if source_elf else None
+    tgt = ElfFile(target_elf) if target_elf else None
+
+    def body_matches(sa: int, ta: int, limit: int = 8) -> int:
+        """How many leading instructions agree, with immediates masked."""
+        if src is None or tgt is None:
+            return -1
+        n = 0
+        for i in range(limit):
+            try:
+                ws = normalized_word(src, sa + 4 * i)
+                wt = normalized_word(tgt, ta + 4 * i)
+            except Exception:
+                break
+            if ws != wt:
+                break
+            n += 1
+        return n
+
+    def is_entry(a: int) -> bool:
+        """Does the target look like a function starts here?"""
+        if tgt is None:
+            return False
+        w = tgt.word(a)
+        # addiu sp, sp, -N  -- the almost universal frame prologue.
+        return (w >> 26) == 0x09 and ((w >> 21) & 0x1F) == 29 \
+            and ((w >> 16) & 0x1F) == 29 and (w & 0x8000) != 0
+
+
     out = {}
     for key, values in seeds.items():
-        keep = []
+        keep, repaired = [], 0
         for v in values:
             t = amap.translate(v)
-            if t is not None:
-                keep.append(t)
+            if t is None:
+                continue
+            # The interval delta is not reliable in every region, and in the
+            # text/font area around 0x003601xx it is wrong badly enough that several
+            # reference functions land on one target address.  Those functions' code
+            # is near-identical -- a large family of small helpers -- so matching the
+            # body cannot tell them apart either, and the target's real entries end up
+            # in no table at all.  A call to such an entry goes through a function
+            # pointer, so it appears in no call instruction, and the recompiled build
+            # then does nothing there at all.
+            #
+            # Nothing here can recover those from the reference alone; they are
+            # declared by hand in recovered_funcs.json instead, which lists addresses
+            # found at run time where the build reported an indirect branch into code
+            # no function claimed.
+            keep.append(t)
         out[key] = sorted(set(keep))
-        log(f"seeds[{key}]: {len(values)} -> {len(out[key])}")
+        note = f", {repaired} re-aligned" if repaired else ""
+        log(f"seeds[{key}]: {len(values)} -> {len(out[key])}{note}")
     return out
 
 

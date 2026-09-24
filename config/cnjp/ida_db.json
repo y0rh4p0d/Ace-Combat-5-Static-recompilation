@@ -101475,6 +101475,42 @@
    "noret": false,
    "thunk": false,
    "lib": false
+  },
+  {
+   "ea": 2668656,
+   "name": "sub_28B870",
+   "chunks": [
+    [
+     2668656,
+     2668660
+    ]
+   ],
+   "recovered_from": "0x0028B800",
+   "why": "reported as an indirect branch target with the same call context as 00361260. Sits inside the mapped function 0028B800, whose reference counterpart has different bounds; the target's own entry is missing from the table."
+  },
+  {
+   "ea": 2668688,
+   "name": "sub_28B890",
+   "chunks": [
+    [
+     2668688,
+     2668692
+    ]
+   ],
+   "recovered_from": "0x0028B800",
+   "why": "same as 0028B870: a second entry inside mapped function 0028B800 that the table does not have."
+  },
+  {
+   "ea": 3543648,
+   "name": "sub_361260",
+   "chunks": [
+    [
+     3543648,
+     3543652
+    ]
+   ],
+   "recovered_from": "0x00360F20",
+   "why": "reported as an indirect branch 285 times; the caller is target 0035F748 (reference 0035F408), which does 'lw r2, gp+0xDAC8' then 'jalr r2', so the address comes from a data pointer and is in no call instruction. The reference twin is a frame prologue with the same ten-instruction opening; the map instead places it on 003611A4."
   }
  ],
  "switches": [

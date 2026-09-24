@@ -9,3 +9,10 @@ Address map summary: 26388 intervals, 131 explicit overrides,
 `pac_names.txt` is deliberately absent: it names members inside
 `DATA.PAC` by name, and those names are the same in every region,
 so the recompiled build reads `config/pac_names.txt` directly.
+
+`recovered_funcs.json` is the exception to the rule above: it is
+written by hand, not generated.  It lists function entries in this
+executable that the address map cannot place, found at run time when
+the build reported an indirect branch into code no function claimed.
+The file itself explains each entry and the evidence for it.  The
+port reads it if present and leaves it alone.
