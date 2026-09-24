@@ -253,9 +253,13 @@ static void intent_resolve(void) {
                     intent_addrs[i].us);
         }
         for (int r = 0; r < 6 && n < (int)sizeof buf - 12; r++)
-            if (intent_region_known[r])
-                n += snprintf(buf + n, sizeof buf - (size_t)n, " %+#x",
-                              (int)intent_region_shift[r]);
+            if (intent_region_known[r]) {
+                /* %+#x is a GNU extension and -Wformat rejects it; print the sign
+                 * separately so the message stays readable either way. */
+                int sh = (int)intent_region_shift[r];
+                n += snprintf(buf + n, sizeof buf - (size_t)n, " %s%x",
+                              sh < 0 ? "-" : "+", sh < 0 ? -sh : sh);
+            }
         ps2_log("rn-intent: %d region(s) located, shifts:%s (%d site(s) left to "
                 "the emulated path)", regions, buf, bad);
     }
@@ -569,8 +573,6 @@ static int tap_group(ps2_ctx *ctx, void *u) {
     return 0;
 }
 
-#define F_SKY_DOME 0x00114F20u
-#define F_SKY_HAZE 0x00114A70u
 static const u32 sky_dome_w[2] = { 0x27BDFF90u, 0xFFB10018u };
 static const u32 sky_haze_w[2] = { 0x3C014580u, 0x27BDFF70u };
 
@@ -656,8 +658,6 @@ static int tap_sky_haze(ps2_ctx *ctx, void *u) {
     return 0;
 }
 
-#define F_CLIP_TRI 0x001AF720u
-#define F_DRAW_FAN 0x001AFE80u
 static const u32 clip_tri_w[2] = { 0x27BDFFA0u, 0x3C02003Du };
 static const u32 draw_fan_w[2] = { 0x27BDFFA0u, 0x3C035000u };
 static rn_int_tri3d tri_in;
@@ -700,9 +700,6 @@ static int tap_draw_fan(ps2_ctx *ctx, void *u) {
     return 0;
 }
 
-#define F_CLOUD_PROJECT 0x001CF718u
-#define F_SPRITE_ROWS   0x001CD568u
-#define F_CLOUD_FIELD   0x001CFAF8u
 #define CLOUD_FIELD_SIZE 0xA58u
 static const u32 cloud_project_w[2] = { 0xD8890000u, 0x4BC14B2Cu };
 static const u32 sprite_rows_w[2] = { 0x00A0782Du, 0x00C0702Du };
@@ -776,8 +773,6 @@ static int tap_sprite_rows(ps2_ctx *ctx, void *u) {
     return 0;
 }
 
-#define F_CLOUD_PLANES  0x001D1D88u
-#define F_CLOUD_VERTEX  0x001D0D30u
 static const u32 cloud_planes_w[2] = { 0x27BDFF00u, 0xFFB00080u };
 static const u32 cloud_vertex_w[2] = { 0xD8E80000u, 0x4BE821BCu };
 
