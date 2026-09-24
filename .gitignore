@@ -42,3 +42,6 @@ tests/mods_resize/
 # Disc images: large, and not ours to redistribute.
 *.iso
 *.ISO
+
+# Packaged release folders (contain ps2_image.bin, which is game code).
+dist/

@@ -232,6 +232,8 @@ pwsh -File tools/run.ps1 -Region cnjp -ExtraArgs --seconds 20
 | `tools/cnjp/` | 把美版配置翻译到日版/汉化版的工具 |
 | `tools/build_all.ps1` | **一键构建脚本** |
 | `tools/run.ps1` | **一键启动脚本** |
+| `tools/export_release.ps1` | **打包成独立文件夹** |
+| `tools/launch.ps1` | 独立文件夹内的启动器 |
 | `runtime/` | 顶替主机的一切，加上设置菜单和 mod 层 |
 | `runtime/src/rn/` | 原生渲染器 |
 | `runtime/dll/` | 构建时拷到 `ac5.exe` 旁边的 SDL3 和 pthread（按架构分） |
@@ -239,10 +241,62 @@ pwsh -File tools/run.ps1 -Region cnjp -ExtraArgs --seconds 20
 | `config/cnjp/` | 同一批文件翻译到日版/汉化版的结果 |
 | `cmake/toolchain-arm64.cmake` | Windows on ARM 交叉编译工具链 |
 | `generated/`、`generated-cnjp/` | 重编译输出（构建时生成，已忽略） |
+| `dist/` | 打包输出（已忽略） |
 
 ---
 
-## 六、与上游的差异
+## 六、打包成独立文件夹
+
+把构建结果打成一个**可以直接拷走、双击运行**的文件夹：
+
+```powershell
+# 先确认你了解授权问题（见下）
+pwsh -File tools/export_release.ps1 -Region cnjp -PersonalUseOnly
+
+# 美版 / arm64 / 自定义输出目录
+pwsh -File tools/export_release.ps1 -Region us   -PersonalUseOnly
+pwsh -File tools/export_release.ps1 -Region cnjp -Arch arm64 -PersonalUseOnly
+pwsh -File tools/export_release.ps1 -Region cnjp -Out D:\AC5 -PersonalUseOnly
+```
+
+输出默认在 `dist/ac5-<region>-<arch>/`（约 74 MB x64 / 87 MB arm64），内容是：
+
+```
+ac5.exe                 游戏本体
+SDL3.dll                必需
+libwinpthread-1.dll     必需
+ps2_image.bin           必需（见下）
+shaders\                11 个 .spv，必需
+launch.cmd              双击启动
+launch.ps1              启动脚本
+README.txt              中英双语说明
+LICENSE
+```
+
+拿到文件夹的人：**把它拷到任意 Windows 机器**，把自备的 ISO 放进去（或启动时指定），**双击 `launch.cmd`** 即可。
+
+`launch.ps1` 会自动在文件夹内、`iso\`、上级目录、`Documents`、`Downloads`、`Desktop` 里找 `*.iso`，也会检查镜像大小（小于 1 GB 会警告），并会拒绝在 x64 上启动 arm64 版本。也可以在文件夹里手动运行：
+
+```powershell
+.\launch.ps1                                   # 自动找 ISO
+.\launch.ps1 -Iso D:\Games\ac5cnjp.iso         # 指定 ISO
+.\launch.ps1 -List                             # 只显示找到了什么，不启动
+```
+
+### ⚠️ 关于 `ps2_image.bin`（重要）
+
+这个文件**是必需的**，删掉它程序会在启动阶段卡住，**窗口一直黑屏**。
+
+它同时**是游戏可执行代码的副本**（从你重编译的那个可执行文件里取出，约 3.5 MB）。所以：
+
+- 打包脚本默认**拒绝执行**，必须先加 `-PersonalUseOnly` 确认你明白这一点
+- 打出来的文件夹**只供自己使用，不要上传或分发**
+- 如果你的目的是公开分享，正确做法是分享源码，让别人在自己机器上重编译 —— 这样 `ps2_image.bin` 会在他们本地生成
+- `.gitignore` 已经忽略 `dist/`，防止误提交
+
+---
+
+## 七、与上游的差异
 
 在 [sal063/Ace-Combat-5-Static-recompilation](https://github.com/sal063/Ace-Combat-5-Static-recompilation) 基础上的改动：
 
@@ -301,11 +355,12 @@ python -m cnjp port --map addr_map.json --config config --out config/cnjp --regi
 
 - 自动把 SDL3 和 pthread 拷到 `ac5.exe` 旁边（按架构选对），程序在任意目录都能直接双击运行
 - `--data` 会自动搜索常见输出目录；失败时打印尝试过的所有绝对路径
-- 新增 `tools/build_all.ps1` 一键构建脚本
+- 新增 `tools/build_all.ps1` 一键构建脚本、`tools/run.ps1` 一键启动脚本、`tools/export_release.ps1` 打包脚本
+- 缺少 `ps2_image.bin` 时快速报错并说明原因，而不是打开一个一直黑屏的窗口
 
 ---
 
-## 七、常见问题
+## 八、常见问题
 
 **CMake 报 `Cannot find source file: .../generated/ps2_func_table.c`**
 还没重新编译，或者 `-o` 输出到了 `generated` 以外的目录。
@@ -336,7 +391,7 @@ ISO 被提交进去了。`.gitignore` 现在会忽略 `*.iso`，如果你已经�
 
 ---
 
-## 八、授权
+## 九、授权
 
 皇牌空战是 Bandai Namco Entertainment 的商标。本项目与它们没有任何关联，也未获其认可。仓库不含任何游戏文件，也不会提供，请不要索取。
 

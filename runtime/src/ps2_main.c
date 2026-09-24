@@ -72,6 +72,18 @@ static const char *image_dirs[] = {
     "generated-cnjp", "generated", "out/generated", "..", ".",
 };
 
+/* Load the executable image the recompiler wrote out.
+ *
+ * This file is needed to run: without it the guest never gets going.  It is used
+ * to recognise functions by their own code (the native renderer's tap points, the
+ * render-intent layer), and the recompiled program cannot start without those
+ * resolutions succeeding.
+ *
+ * It is also, unavoidably, a copy of the game's own executable, which is why it
+ * is not in the repository and why a build handed to someone else normally omits
+ * it and has them recompile and pass --data at their own output.
+ *
+ * Returns 0 on success and -1 on any failure. */
 static int load_image(const char *dir, int dir_given) {
     char path[1024];
     char tried[1024];
@@ -118,14 +130,20 @@ static int load_image(const char *dir, int dir_given) {
 
     fprintf(stderr,
         "cannot open the recompiler's memory image '%s'.\n"
-        "It is written by the recompile step into the output directory, which\n"
-        "you then pass to --data:\n"
+        "\n"
+        "The program cannot start without it, so it stops here instead of\n"
+        "opening a window that would stay black.\n"
+        "\n"
+        "'%s' is written by the recompile step into that step's output\n"
+        "directory.  --data must point at that directory -- not at the disc, and\n"
+        "not at the folder the exe is in unless the recompile output was put\n"
+        "there:\n"
         "\n"
         "  python -m ps2recomp SLPS_254.18 -o generated-cnjp ...\n"
         "  ac5.exe --data generated-cnjp --disc <disc.iso>\n"
         "\n"
-        "Both directories are needed: --data is the folder holding\n"
-        "%s, --disc is the ISO or extracted disc.  Looked in:%s\n",
+        "--disc is the ISO or the extracted disc; both are separate arguments.\n"
+        "Looked for it in:%s\n",
         image_path, image_path, tried);
     return -1;
 }

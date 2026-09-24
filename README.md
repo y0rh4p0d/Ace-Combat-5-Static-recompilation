@@ -203,7 +203,6 @@ cmake --build build/cnjp
 port itself.
 
 ### One command instead
-
 `tools/build_all.ps1` wraps the whole chain — extracting the executable, the
 recompile, and the build — for any or all of the three targets:
 
@@ -220,6 +219,25 @@ It checks the toolchain first and says what is absent instead of failing halfway
 through, extracts `SLUS_208.51` / `SLPS_254.18` from the disc image if you have not
 already, fetches the arm64 cross toolchain when that target is wanted, and picks the
 right per-architecture DLLs. Run `-Why` first on a fresh machine.
+
+### Packaging a standalone folder
+
+```powershell
+pwsh -File tools/export_release.ps1 -Region cnjp -PersonalUseOnly
+```
+
+produces `dist/ac5-cnjp-x64/` — the exe, its DLLs, the shaders, the recompiler's
+memory image and a launcher — which can be copied to any Windows machine and
+started by double-clicking `launch.cmd`. Whoever runs it supplies their own disc
+image; the launcher finds one or asks for it, checks that it is a full-size image,
+and refuses to start an arm64 build on an x64 host.
+
+The package includes `ps2_image.bin` because the program will not start without it:
+launched without it, the game stalls in its first second and the window stays black
+rather than reporting anything. That file is also a copy of the game's own
+executable, so the script refuses to run without `-PersonalUseOnly` and `dist/` is
+ignored by git. To share a build publicly, share the source and have people
+recompile — that produces the image on their own machine.
 
 ### How the config was translated
 
@@ -424,6 +442,8 @@ You don't need to. Everything in `config/` is already generated and committed, s
 - `config/cnjp/`: the same files translated to the Japanese / Chinese executable
 - `tools/cnjp/`: the tool that does that translation
 - `tools/build_all.ps1`: one command that builds any or all three targets
+- `tools/export_release.ps1`: packages a build into a folder that runs on its own
+- `tools/launch.ps1`: the launcher that goes inside such a folder
 - `tools/fork_and_commit.ps1`: commits this working copy to your own fork
 - `runtime/dll/`: the SDL3 and pthread DLLs the build copies next to `ac5.exe`, per architecture
 - `cmake/toolchain-arm64.cmake`: the Windows-on-ARM cross build
