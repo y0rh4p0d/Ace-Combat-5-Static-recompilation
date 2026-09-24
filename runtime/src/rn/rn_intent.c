@@ -10,16 +10,294 @@
 
 int rn_intents_pending;
 
-#define F_PRIM_WRITER 0x0031FB88u
-#define F_RECT_HELPER 0x0031FF00u
-#define F_LINE_HELPER 0x0031FFB0u
+/* ---------------------------------------------------------------------------
+ * Region-independent addressing.
+ *
+ * Everything below names guest functions by US (SLUS_208.51) address.  The
+ * Japanese executable, which is also the base for the Chinese localisation, puts
+ * them elsewhere.  Measured, they fall into five separate shift regions:
+ *
+ *     -0x28    the bulk of them, 0x00134598..0x001AFE80
+ *     +0x0     0x001CD568..0x001D1D88
+ *     +0x8     0x00114A70 and 0x00114F20
+ *     +0x2B0   0x002D6E00
+ *     +0x328   0x0031FB88, 0x0031FF00, 0x0031FFB0
+ *
+ * Each region is contiguous in US address space and maps at one constant shift,
+ * so the resolver below anchors on the two entries whose instruction signature
+ * is unique in every build, then works outwards: every other address is accepted
+ * only at the shift of its nearest already-resolved neighbour.  An address that
+ * cannot be placed is reported and skipped rather than guessed at.
+ *
+ * The addresses defined here are variables, not macros, precisely so that this
+ * rewrite reaches every use -- they are compared against guest memory, used as
+ * hook targets and recorded in intent headers.
+ * --------------------------------------------------------------------------- */
+static u32 F_PRIM_WRITER;
+static u32 F_RECT_HELPER;
+static u32 F_LINE_HELPER;
+static u32 F_SKY_DOME;
+static u32 F_SKY_HAZE;
+static u32 F_CLIP_TRI;
+static u32 F_DRAW_FAN;
+static u32 F_CLOUD_PROJECT;
+static u32 F_SPRITE_ROWS;
+static u32 F_CLOUD_FIELD;
+static u32 F_CLOUD_PLANES;
+static u32 F_CLOUD_VERTEX;
 
-static const struct { u32 addr, size; u32 w[4]; } fn_writer = {
-    F_PRIM_WRITER, 0x378, { 0x30AEFFFFu, 0x00063400u, 0x31C20010u, 0x00E0782Du } };
-static const struct { u32 addr, size; u32 w[4]; } fn_rect = {
-    F_RECT_HELPER, 0xB0, { 0x27BDFFA0u, 0x3C020FFFu, 0x93AD0060u, 0x00A0602Du } };
-static const struct { u32 addr, size; u32 w[4]; } fn_line = {
-    F_LINE_HELPER, 0xA0, { 0x27BDFFA0u, 0x3C020FFFu, 0x93A30060u, 0x3442FFFFu } };
+#define F_PRIM_WRITER_US  0x0031FB88u
+#define F_RECT_HELPER_US  0x0031FF00u
+#define F_LINE_HELPER_US  0x0031FFB0u
+#define F_SKY_DOME_US     0x00114F20u
+#define F_SKY_HAZE_US     0x00114A70u
+#define F_CLIP_TRI_US     0x001AF720u
+#define F_DRAW_FAN_US     0x001AFE80u
+#define F_CLOUD_PROJECT_US 0x001CF718u
+#define F_SPRITE_ROWS_US  0x001CD568u
+#define F_CLOUD_FIELD_US  0x001CFAF8u
+#define F_CLOUD_PLANES_US 0x001D1D88u
+#define F_CLOUD_VERTEX_US 0x001D0D30u
+#define G_MSGWIN_US       0x002D6E00u
+
+/* Verification words, read from the loaded image to confirm a resolved address
+ * really holds the function the taps expect. */
+static struct { u32 addr, size; u32 w[4]; } fn_writer = {
+    F_PRIM_WRITER_US, 0x378, { 0x30AEFFFFu, 0x00063400u, 0x31C20010u, 0x00E0782Du } };
+static struct { u32 addr, size; u32 w[4]; } fn_rect = {
+    F_RECT_HELPER_US, 0xB0, { 0x27BDFFA0u, 0x3C020FFFu, 0x93AD0060u, 0x00A0602Du } };
+static struct { u32 addr, size; u32 w[4]; } fn_line = {
+    F_LINE_HELPER_US, 0xA0, { 0x27BDFFA0u, 0x3C020FFFu, 0x93A30060u, 0x3442FFFFu } };
+
+/* ---------------------------------------------------------------------------
+ * Address resolution
+ * ------------------------------------------------------------------------- */
+
+/* One entry per address that has to be moved.  `anchor` marks the two whose
+ * signature is unique in both builds; they are what fixes a region's shift. */
+typedef struct {
+    u32 us;                    /* US address */
+    u32 words[4];              /* leading instructions, for the sanity check */
+    int anchor;
+} intent_addr;
+
+static const intent_addr intent_addrs[] = {
+    /* Region +0x8 */
+    { F_SKY_HAZE_US, { 0x3C014580u, 0x44810800u, 0x27BDFF70u, 0xFFB30038u }, 0 },
+    { F_SKY_DOME_US, { 0x27BDFF90u, 0xFFB10018u, 0x0080882Du, 0xFFB70048u }, 0 },
+    /* Region -0x28: the bulk of the group writers */
+    { 0x00134598u, { 0x27BDFDE0u, 0x240300FFu, 0xFFB201D0u, 0x00C0902Du }, 0 },
+    { 0x00134EB0u, { 0x27BDFEB0u, 0x3C014120u, 0x44812800u, 0xFFB00100u }, 0 },
+    { 0x00135378u, { 0x27BDFF90u, 0xFFB40050u, 0x0080A02Du, 0xFFB00030u }, 0 },
+    { 0x001354D0u, { 0x27BDFF30u, 0xFFB500A8u, 0x0080A82Du, 0xFFB30098u }, 0 },
+    { 0x00135928u, { 0x27BDFEE0u, 0xFFB400F0u, 0x0080A02Du, 0xFFB300E8u }, 0 },
+    { 0x00135EC0u, { 0x27BDFF40u, 0xFFB50098u, 0x0080A82Du, 0xFFB30088u }, 0 },
+    { 0x00136330u, { 0x27BDFF30u, 0x24030001u, 0xFFB20090u, 0xFFB700B8u }, 0 },
+    { 0x00136688u, { 0x27BDFEB0u, 0x24030001u, 0xFFB500F8u, 0x0080A82Du }, 0 },
+    { 0x00136A68u, { 0x27BDFF30u, 0x24030001u, 0xFFB40090u, 0xFFB600A0u }, 0 },
+    { 0x00136E88u, { 0x27BDFF40u, 0x24020001u, 0xFFB00070u, 0x00C0802Du }, 0 },
+    { 0x00137010u, { 0x27BDFF20u, 0xFFB200A0u, 0x0080902Du, 0xFFB00090u }, 0 },
+    { 0x00137258u, { 0x27BDFE40u, 0x24030001u, 0xFFB60140u, 0x00A0B02Du }, 0 },
+    { 0x00137C10u, { 0x27BDFF80u, 0xFFB30028u, 0x0080982Du, 0xFFB40030u }, 0 },
+    { 0x00138A58u, { 0x27BDFF20u, 0xFFB10098u, 0x0080882Du, 0xFFB300A8u }, 0 },
+    { 0x00139250u, { 0x27BDFFC0u, 0xFFB00010u, 0x0080802Du, 0xFFB10018u }, 0 },
+    { 0x0013DBD8u, { 0x27BDFF60u, 0x0000382Du, 0xFFB10078u, 0x0080882Du }, 0 },
+    { 0x0013DE38u, { 0x27BDFE90u, 0xFFB40120u, 0x0080A02Du, 0xFFBE0140u }, 0 },
+    { 0x0013E300u, { 0x27BDFF80u, 0xFFB50068u, 0x0080A82Du, 0xFFB40060u }, 0 },
+    { 0x0013E6F8u, { 0x27BDFF90u, 0x3C014900u, 0x44814000u, 0xFFB20030u }, 0 },
+    { 0x0013E920u, { 0x27BDFC30u, 0xFFB00350u, 0x00E0802Du, 0xFFBE0390u }, 0 },
+    { 0x0013F660u, { 0x27BDFF30u, 0x24030013u, 0xFFB30098u, 0xFFB500A8u }, 0 },
+    { 0x0013F878u, { 0x27BDFF60u, 0xFFB50078u, 0x0080A82Du, 0xFFB60080u }, 0 },
+    { 0x0013FB70u, { 0x27BDFF50u, 0xFFB10068u, 0x0080882Du, 0xFFB50088u }, 0 },
+    { 0x00140780u, { 0x27BDFF10u, 0x24030003u, 0xFFB400A0u, 0x0080A02Du }, 0 },
+    { 0x00140A20u, { 0x27BDFE10u, 0xFFB001A0u, 0x24100001u, 0xFFB401C0u }, 0 },
+    { 0x001410D0u, { 0x27BDFEB0u, 0x3C030042u, 0x3C020042u, 0xFFB50128u }, 0 },
+    { 0x00141478u, { 0x27BDFBB0u, 0xFFB103F8u, 0x0080882Du, 0xFFBE0430u }, 0 },
+    { 0x00141AC8u, { 0x27BDFF20u, 0xFFB300A8u, 0x0080982Du, 0xFFB400B0u }, 0 },
+    { 0x00141EC8u, { 0x27BDFF40u, 0xFFB20080u, 0x0080902Du, 0xFFB600A0u }, 0 },
+    { 0x00142A38u, { 0x27BDFEB0u, 0xFFB300D8u, 0x0080982Du, 0xFFB400E0u }, 0 },
+    { 0x00149298u, { 0x27BDFD20u, 0xFFB00280u, 0x00C0802Du, 0xFFB702B8u }, 0 },
+    { F_CLIP_TRI_US, { 0x27BDFFA0u, 0x3C02003Du, 0xFFBE0050u, 0x0080F02Du }, 0 },
+    { F_DRAW_FAN_US, { 0x27BDFFA0u, 0x3C035000u, 0xFFB40030u, 0x00C0A02Du }, 0 },
+    /* Region 2 */
+    { F_SPRITE_ROWS_US, { 0x00A0782Du, 0x00C0702Du, 0x3402FFFFu, 0x00E0302Du }, 1 },
+    { F_CLOUD_PROJECT_US, { 0xD8890000u, 0x4BC14B2Cu, 0x4BCC632Au, 0x4B0C6301u }, 1 },
+    { F_CLOUD_FIELD_US, { 0x27BDFED0u, 0xFFB100A8u, 0x00C0882Du, 0xFFB200B0u }, 0 },
+    { F_CLOUD_VERTEX_US, { 0xD8E80000u, 0x4BE821BCu, 0x4BE828BDu, 0x4BE830BEu }, 1 },
+    { F_CLOUD_PLANES_US, { 0x27BDFF00u, 0xFFB00080u, 0x00E0802Du, 0xFFB10088u }, 0 },
+    /* Region +0x0 */
+    { G_MSGWIN_US, { 0x27BDFF90u, 0x00A0482Du, 0xFFB10018u, 0x0080882Du }, 1 },
+    /* Region +0x2B0 */
+    { F_PRIM_WRITER_US, { 0x30AEFFFFu, 0x00063400u, 0x31C20010u, 0x00E0782Du }, 1 },
+    { F_RECT_HELPER_US, { 0x27BDFFA0u, 0x3C020FFFu, 0x93AD0060u, 0x00A0602Du }, 0 },
+    { F_LINE_HELPER_US, { 0x27BDFFA0u, 0x3C020FFFu, 0x93A30060u, 0x3442FFFFu }, 0 },
+};
+#define N_INTENT_ADDRS (sizeof intent_addrs / sizeof intent_addrs[0])
+
+static u32 intent_resolved[N_INTENT_ADDRS];
+static int intent_addrs_ready;
+
+static int intent_sig_ok(u32 at, const intent_addr *e) {
+    /* Exact comparison, deliberately.  These functions are byte-identical in both
+     * builds -- the table is generated from the US binary and checked against the
+     * other one -- and masking the immediate fields instead would be a large step
+     * backwards: with those fields masked, the ubiquitous `addiu sp, sp, -N`
+     * prologue makes every entry match over a thousand places. */
+    for (int i = 0; i < 4; i++) {
+        if (!e->words[i]) continue;
+        if (ps2_image_word(at + 4u * (u32)i) != e->words[i]) return 0;
+    }
+    return 1;
+}
+
+/* Look for one entry's first word, anywhere in the loaded image, and confirm the
+ * rest of its signature.  Returns the number of matches. */
+static int intent_scan(const intent_addr *e, u32 *out, int cap) {
+    u32 lo = 0, hi = 0, want = e->words[0];
+    int n = 0;
+    ps2_text_bounds(&lo, &hi);
+    for (u32 a = lo; a + 16u <= hi; a += 4u) {
+        if (ps2_image_word(a) != want) continue;
+        if (!intent_sig_ok(a, e)) continue;
+        if (out && n < cap) out[n] = a;
+        n++;
+        if (n > cap) break;
+    }
+    return n;
+}
+
+static u32 intent_addr_of(u32 us) {
+    for (size_t i = 0; i < N_INTENT_ADDRS; i++)
+        if (intent_addrs[i].us == us) return intent_resolved[i];
+    return 0;
+}
+
+/* The address table is written in ascending US address order and already grouped
+ * by region, and within a region every address moves by the same amount.  That is
+ * what makes resolution tractable: rather than trying to identify each function
+ * on its own -- which cannot work, because their `addiu sp, sp, -N` prologues are
+ * far from unique -- we find the shift of a whole region at once and then just
+ * apply it.
+ *
+ * A region is accepted only if its first entry matches a unique location in the
+ * loaded image.  Anchors mark entries whose signature is unique in every build
+ * and can therefore be trusted on their own; if no anchor is available for a
+ * region, two entries having to agree on one shift is required instead.
+ */
+/* Region index per entry of intent_addrs[], in the same order.  Generated
+ * alongside it: a number out of step here resolves the wrong functions. */
+static const int intent_region[] = {
+    0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 4, 4, 4
+};
+static u32 intent_region_shift[6];
+static int intent_region_known[6];
+
+static int intent_region_has_anchor(int r) {
+    for (size_t i = 0; i < N_INTENT_ADDRS; i++)
+        if (intent_region[i] == r && intent_addrs[i].anchor) return 1;
+    return 0;
+}
+
+static void intent_resolve(void) {
+    if (intent_addrs_ready) return;
+
+    for (int r = 0; r < 6; r++) {
+        const intent_addr *first = NULL;
+        u32 hit = 0;
+        int n;
+
+        for (size_t i = 0; i < N_INTENT_ADDRS; i++) {
+            if (intent_region[i] != r) continue;
+            first = &intent_addrs[i];
+            break;
+        }
+        if (!first) continue;
+
+        n = intent_scan(first, &hit, 1);
+        if (n == 1) {
+            intent_region_shift[r] = hit - first->us;
+            intent_region_known[r] = 1;
+        } else if (intent_region_has_anchor(r)) {
+            /* Fall back to an entry in this region that is unique on its own. */
+            for (size_t i = 0; i < N_INTENT_ADDRS; i++) {
+                if (intent_region[i] != r || !intent_addrs[i].anchor) continue;
+                if (intent_scan(&intent_addrs[i], &hit, 1) != 1) continue;
+                intent_region_shift[r] = hit - intent_addrs[i].us;
+                intent_region_known[r] = 1;
+                break;
+            }
+        }
+    }
+
+    for (size_t i = 0; i < N_INTENT_ADDRS; i++) {
+        int r = intent_region[i];
+        if (!intent_region_known[r]) continue;
+        {
+            u32 cand = intent_addrs[i].us + intent_region_shift[r];
+            /* Confirm the loaded code really is this function there. */
+            if (intent_sig_ok(cand, &intent_addrs[i]))
+                intent_resolved[i] = cand;
+        }
+    }
+
+    {
+        int bad = 0, regions = 0;
+        char buf[200];
+        int n = 0;
+        for (int r = 0; r < 6; r++) if (intent_region_known[r]) regions++;
+        for (size_t i = 0; i < N_INTENT_ADDRS; i++) {
+            if (intent_resolved[i]) continue;
+            bad++;
+            ps2_log("rn-intent: %08X could not be located in this executable; "
+                    "that site falls back to the emulated path",
+                    intent_addrs[i].us);
+        }
+        for (int r = 0; r < 6 && n < (int)sizeof buf - 12; r++)
+            if (intent_region_known[r])
+                n += snprintf(buf + n, sizeof buf - (size_t)n, " %+#x",
+                              (int)intent_region_shift[r]);
+        ps2_log("rn-intent: %d region(s) located, shifts:%s (%d site(s) left to "
+                "the emulated path)", regions, buf, bad);
+    }
+    intent_addrs_ready = 1;
+}
+
+/* Copy the resolved values into the names the rest of the file uses. */
+static void intent_apply(void) {
+    F_PRIM_WRITER   = intent_addr_of(F_PRIM_WRITER_US);
+    F_RECT_HELPER   = intent_addr_of(F_RECT_HELPER_US);
+    F_LINE_HELPER   = intent_addr_of(F_LINE_HELPER_US);
+    F_SKY_DOME      = intent_addr_of(F_SKY_DOME_US);
+    F_SKY_HAZE      = intent_addr_of(F_SKY_HAZE_US);
+    F_CLIP_TRI      = intent_addr_of(F_CLIP_TRI_US);
+    F_DRAW_FAN      = intent_addr_of(F_DRAW_FAN_US);
+    F_CLOUD_PROJECT = intent_addr_of(F_CLOUD_PROJECT_US);
+    F_SPRITE_ROWS   = intent_addr_of(F_SPRITE_ROWS_US);
+    F_CLOUD_FIELD   = intent_addr_of(F_CLOUD_FIELD_US);
+    F_CLOUD_PLANES  = intent_addr_of(F_CLOUD_PLANES_US);
+    F_CLOUD_VERTEX  = intent_addr_of(F_CLOUD_VERTEX_US);
+    /* These three carry their own address, used for the sanity check and for
+     * deciding whether a 2D site belongs to a helper, so they need retargeting
+     * too.  Deliberately not const for that reason. */
+    {
+        u32 a;
+        if ((a = intent_addr_of(F_PRIM_WRITER_US)) != 0) fn_writer.addr = a;
+        if ((a = intent_addr_of(F_RECT_HELPER_US)) != 0) fn_rect.addr = a;
+        if ((a = intent_addr_of(F_LINE_HELPER_US)) != 0) fn_line.addr = a;
+    }
+}
+
+/* The site number an intent header records has to be the US address, so that a
+ * capture taken on one build means the same thing on another. */
+static u32 intent_site(u32 resolved) {
+    u32 us = 0;
+    if (!resolved) return resolved;
+    for (size_t i = 0; i < N_INTENT_ADDRS; i++)
+        if (intent_addrs[i].us == resolved) return resolved;
+    for (size_t i = 0; i < N_INTENT_ADDRS; i++)
+        if (intent_resolved[i] == resolved && intent_resolved[i]) us = intent_addrs[i].us;
+    return us ? us : resolved;
+}
 
 #define PEND_MAX 8192u
 #define ARENA_BYTES (4u << 20)
@@ -98,7 +376,9 @@ static void hdr_init(rn_intent_hdr *h, u16 kind, u32 len, u32 site, u32 pkt) {
     memset(h, 0, sizeof *h);
     h->kind = kind;
     h->len = len;
-    h->site = site;
+    /* Recorded as the US address even when another region is loaded, so a
+     * capture taken on one build means the same thing on the other. */
+    h->site = intent_site(site);
     h->emitter = rn_tap_open_emitter(pkt);
 }
 
@@ -207,7 +487,19 @@ static int tap_writer(ps2_ctx *ctx, void *u) {
 }
 
 typedef struct { u32 addr; u32 w0, w1; u16 flags; } group_writer;
-static const group_writer groups[] = {
+/* Not const: `addr` is rewritten in place once the loaded executable's address
+ * layout is known.  `us` keeps the original, which is what the resolver keys on
+ * and what the check below compares the loaded code against. */
+static const u32 group_us[] = {
+    0x002D6E00u, 0x00134598u, 0x00134EB0u, 0x00141AC8u, 0x00141EC8u,
+    0x00135378u, 0x001354D0u, 0x00135928u, 0x00135EC0u, 0x0013E300u,
+    0x00136330u, 0x00136688u, 0x00136A68u, 0x00136E88u, 0x00137010u,
+    0x00137258u, 0x00137C10u, 0x00138A58u, 0x0013E920u, 0x0013FB70u,
+    0x00140780u, 0x0013F660u, 0x0013F878u, 0x00140A20u, 0x001410D0u,
+    0x00141478u, 0x00149298u, 0x00139250u, 0x0013E6F8u, 0x0013DBD8u,
+    0x0013DE38u, 0x00142A38u,
+};
+static group_writer groups[] = {
     { 0x002D6E00u, 0x27BDFF90u, 0x00A0482Du, 0 },
     { 0x00134598u, 0x27BDFDE0u, 0x240300FFu, RN_G_WORLD },
     { 0x00134EB0u, 0x27BDFEB0u, 0x3C014120u, RN_G_WORLD },
@@ -242,6 +534,17 @@ static const group_writer groups[] = {
     { 0x00142A38u, 0x27BDFEB0u, 0xFFB300D8u, RN_G_WORLD },
 };
 #define N_GROUPS (sizeof groups / sizeof groups[0])
+
+/* Point each group writer at wherever it lives in the loaded executable.  An
+ * entry that could not be resolved keeps its US address; the init check below
+ * then rejects it, which is the behaviour we want rather than hooking whatever
+ * happens to sit at a stale address. */
+static void apply_group_addrs(void) {
+    for (size_t i = 0; i < N_GROUPS; i++) {
+        u32 a = intent_addr_of(group_us[i]);
+        if (a) groups[i].addr = a;
+    }
+}
 
 static int tap_group_enter(ps2_ctx *ctx, void *u) {
     (void)ctx; (void)u;
@@ -593,8 +896,10 @@ static int tap_cloud_planes(ps2_ctx *ctx, void *u) {
 }
 
 static int code_matches(u32 addr, const u32 *w) {
+    /* Reads the loaded executable, not guest RAM: the guest pages overlays over
+     * parts of its own image, so guest RAM stops describing the executable. */
     for (int i = 0; i < 4; i++)
-        if (ps2_r32(addr + 4u * (u32)i) != w[i]) return 0;
+        if (ps2_image_word(addr + 4u * (u32)i) != w[i]) return 0;
     return 1;
 }
 
@@ -605,6 +910,11 @@ void rn_intent_init(void) {
         return;
     }
     if (!rn_taps_on) return;
+    /* Work out where these functions live in whichever executable is loaded
+     * before anything below compares against or hooks them. */
+    intent_resolve();
+    intent_apply();
+    apply_group_addrs();
     if (!code_matches(fn_writer.addr, fn_writer.w)
         || !code_matches(fn_rect.addr, fn_rect.w)
         || !code_matches(fn_line.addr, fn_line.w)) {
@@ -628,8 +938,8 @@ void rn_intent_init(void) {
         return;
     }
     for (uintptr_t i = 0; i < N_GROUPS; i++) {
-        if (ps2_r32(groups[i].addr) != groups[i].w0
-            || ps2_r32(groups[i].addr + 4u) != groups[i].w1) {
+        if (ps2_image_word(groups[i].addr) != groups[i].w0
+            || ps2_image_word(groups[i].addr + 4u) != groups[i].w1) {
             ps2_log("rn: 2D group writer %08X does not match; not claimed",
                     groups[i].addr);
             continue;
@@ -640,8 +950,8 @@ void rn_intent_init(void) {
                               "rn-intents") < 0)
             ps2_log("rn: the hook layer refused 2D group writer %08X", groups[i].addr);
     }
-    if (ps2_r32(F_SKY_DOME) == sky_dome_w[0] && ps2_r32(F_SKY_DOME + 4u) == sky_dome_w[1]
-        && ps2_r32(F_SKY_HAZE) == sky_haze_w[0] && ps2_r32(F_SKY_HAZE + 8u) == sky_haze_w[1]) {
+    if (ps2_image_word(F_SKY_DOME) == sky_dome_w[0] && ps2_image_word(F_SKY_DOME + 4u) == sky_dome_w[1]
+        && ps2_image_word(F_SKY_HAZE) == sky_haze_w[0] && ps2_image_word(F_SKY_HAZE + 8u) == sky_haze_w[1]) {
         if (ps2_hook_after(F_SKY_DOME, tap_sky_dome, NULL, 100, "rn-intents") < 0
             || ps2_hook_before(F_SKY_HAZE, tap_sky_haze_enter, NULL, 100, "rn-intents") < 0
             || ps2_hook_after(F_SKY_HAZE, tap_sky_haze, NULL, 100, "rn-intents") < 0)
@@ -650,8 +960,8 @@ void rn_intent_init(void) {
         ps2_log("rn: the sky writers %08X / %08X do not match; not recorded",
                 F_SKY_DOME, F_SKY_HAZE);
     }
-    if (ps2_r32(F_CLIP_TRI) == clip_tri_w[0] && ps2_r32(F_CLIP_TRI + 4u) == clip_tri_w[1]
-        && ps2_r32(F_DRAW_FAN) == draw_fan_w[0] && ps2_r32(F_DRAW_FAN + 4u) == draw_fan_w[1]) {
+    if (ps2_image_word(F_CLIP_TRI) == clip_tri_w[0] && ps2_image_word(F_CLIP_TRI + 4u) == clip_tri_w[1]
+        && ps2_image_word(F_DRAW_FAN) == draw_fan_w[0] && ps2_image_word(F_DRAW_FAN + 4u) == draw_fan_w[1]) {
         if (ps2_hook_before(F_CLIP_TRI, tap_clip_tri, NULL, 100, "rn-intents") < 0
             || ps2_hook_after(F_DRAW_FAN, tap_draw_fan, NULL, 100, "rn-intents") < 0)
             ps2_log("rn: the hook layer refused the clip-and-draw taps");
@@ -659,10 +969,10 @@ void rn_intent_init(void) {
         ps2_log("rn: the clip-and-draw helpers %08X / %08X do not match; not recorded",
                 F_CLIP_TRI, F_DRAW_FAN);
     }
-    if (ps2_r32(F_CLOUD_PROJECT) == cloud_project_w[0]
-        && ps2_r32(F_CLOUD_PROJECT + 4u) == cloud_project_w[1]
-        && ps2_r32(F_SPRITE_ROWS) == sprite_rows_w[0]
-        && ps2_r32(F_SPRITE_ROWS + 4u) == sprite_rows_w[1]) {
+    if (ps2_image_word(F_CLOUD_PROJECT) == cloud_project_w[0]
+        && ps2_image_word(F_CLOUD_PROJECT + 4u) == cloud_project_w[1]
+        && ps2_image_word(F_SPRITE_ROWS) == sprite_rows_w[0]
+        && ps2_image_word(F_SPRITE_ROWS + 4u) == sprite_rows_w[1]) {
         if (ps2_hook_before(F_CLOUD_PROJECT, tap_cloud_project_enter, NULL, 100, "rn-intents") < 0
             || ps2_hook_after(F_CLOUD_PROJECT, tap_cloud_project, NULL, 100, "rn-intents") < 0
             || ps2_hook_before(F_SPRITE_ROWS, tap_sprite_rows_enter, NULL, 100, "rn-intents") < 0
@@ -672,10 +982,10 @@ void rn_intent_init(void) {
         ps2_log("rn: the cloud writers %08X / %08X do not match; not recorded",
                 F_CLOUD_PROJECT, F_SPRITE_ROWS);
     }
-    if (ps2_r32(F_CLOUD_PLANES) == cloud_planes_w[0]
-        && ps2_r32(F_CLOUD_PLANES + 4u) == cloud_planes_w[1]
-        && ps2_r32(F_CLOUD_VERTEX) == cloud_vertex_w[0]
-        && ps2_r32(F_CLOUD_VERTEX + 4u) == cloud_vertex_w[1]) {
+    if (ps2_image_word(F_CLOUD_PLANES) == cloud_planes_w[0]
+        && ps2_image_word(F_CLOUD_PLANES + 4u) == cloud_planes_w[1]
+        && ps2_image_word(F_CLOUD_VERTEX) == cloud_vertex_w[0]
+        && ps2_image_word(F_CLOUD_VERTEX + 4u) == cloud_vertex_w[1]) {
         if (ps2_hook_before(F_CLOUD_PLANES, tap_cloud_planes_enter, NULL, 100, "rn-intents") < 0
             || ps2_hook_after(F_CLOUD_PLANES, tap_cloud_planes, NULL, 100, "rn-intents") < 0
             || ps2_hook_before(F_CLOUD_VERTEX, tap_cloud_vertex_enter, NULL, 100, "rn-intents") < 0

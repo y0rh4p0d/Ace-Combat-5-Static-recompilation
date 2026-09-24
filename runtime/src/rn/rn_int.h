@@ -22,6 +22,9 @@ void ps2_gs_native_tex_report(void);
 
 rn_emitter *rn_emitter_mut(u32 id);
 u32  rn_tap_open_emitter(u32 pkt);
+/* Translate a US-release guest address to the loaded executable's equivalent.
+ * rn_init() resolves the table this reads; before that it returns its input. */
+u32  rn_resolve_addr(u32 us_addr);
 void rn_intent_frame_end(void);
 void rn_intent_tag(u32 tadr, u32 emitter);
 

@@ -53,9 +53,9 @@ void ps2_watch_hit(u32 addr, u64 val, int width) {
 #if PS2_TRACE_CALLS
     {
         unsigned i;
-        char line[256];
+        char line[1400];
         int k = 0;
-        for (i = 6; i > 0 && k < 200; i--) {
+        for (i = 24; i > 0 && k < 1300; i--) {
             u32 a = ps2_trace_ring[(ps2_trace_pos - i) & (PS2_TRACE_RING - 1)];
             const char *nm = ps2_symbol_name(a);
             k += snprintf(line + k, sizeof line - (size_t)k, " %08X%s%s", a,
@@ -203,6 +203,43 @@ void ps2_text_bounds(u32 *lo, u32 *hi) {
     if (hi) *hi = ps2_text_hi;
 }
 
+/* A copy of the loaded executable image, kept because guest RAM stops matching
+ * the executable as soon as the guest starts paging its own overlays in.
+ * Everything that identifies a function by its instructions reads this.
+ *
+ * The base and length are passed in rather than taken from ps2_image_base /
+ * ps2_image_size, because those live in the generated ps2_image.c which gsreplay
+ * does not link. */
+static u8 *ps2_image_copy;
+static u32 ps2_image_lo, ps2_image_len;
+
+void ps2_image_snapshot(u32 base, u32 len) {
+    if (ps2_image_copy || !len) return;
+    ps2_image_lo = base;
+    ps2_image_len = len;
+    ps2_image_copy = (u8 *)malloc(len);
+    if (!ps2_image_copy) {
+        ps2_log("image: cannot keep a copy of the executable image; function "
+                "recognition by code signature is unavailable");
+        return;
+    }
+    memcpy(ps2_image_copy, ps2_ram + (base & (PS2_RAM_SIZE - 1u)), len);
+}
+
+int ps2_image_has(u32 addr, u32 len) {
+    if (!ps2_image_copy) return 0;
+    if (addr < ps2_image_lo) return 0;
+    if (addr - ps2_image_lo > ps2_image_len) return 0;
+    return (addr - ps2_image_lo) + len <= ps2_image_len;
+}
+
+u32 ps2_image_word(u32 addr) {
+    u32 v = 0;
+    if (!ps2_image_has(addr, 4)) return 0;
+    memcpy(&v, ps2_image_copy + (addr - ps2_image_lo), 4);
+    return v;
+}
+
 #define UNKNOWN_SEEN_MAX 128
 static u32 unknown_seen[UNKNOWN_SEEN_MAX];
 static unsigned unknown_seen_n;
@@ -248,15 +285,34 @@ void ps2_unknown_report(void) {
         ps2_log("   %08X", unknown_seen[i]);
 }
 
-void ps2_dispatch(ps2_ctx *ctx, u32 addr) {
+/* The generated code lands here after setting ctx->pc.  This is the function the
+ * guest's indirect jumps tail-call, so its signature must match a recompiled
+ * function exactly: one argument, `void *` return. */
+void *ps2_enter(ps2_ctx *ctx) {
+    u32 addr = ctx->pc;
     u32 off = addr - ps2_text_lo;
-    if (PS2_LIKELY(off < (ps2_text_hi - ps2_text_lo))) {
-        ps2_fn f = ps2_fn_index[off >> 2];
-        if (PS2_LIKELY(f != NULL)) {
-            PS2_TAIL return f(ctx);
-        }
+    /* The lookup has to be unconditional for the tail call to be valid.  clang's
+     * [[clang::musttail]] (unlike GCC's [[gnu::musttail]]) requires the call to
+     * be the whole statement, so `if (f) TAIL return f(ctx);` is rejected.
+     * Resolve the slot first and then make the call the only thing that
+     * happens: a real slot is tail-called, an empty one falls through to the
+     * diagnostic below and returns to ps2_enter's own caller. */
+    ps2_fn f = PS2_LIKELY(off < (ps2_text_hi - ps2_text_lo))
+                   ? ps2_fn_index[off >> 2]
+                   : NULL;
+    if (PS2_UNLIKELY(f == NULL)) {
+        ps2_unknown_target(ctx, addr);
+        return NULL;
     }
-    ps2_unknown_target(ctx, addr);
+    PS2_TAIL return f(ctx);
+}
+
+/* For callers in the runtime that know the address as a plain u32.  Not a tail
+ * call: it has three arguments, so it cannot be one. */
+void *ps2_dispatch(ps2_ctx *ctx, u32 addr_lo, u32 addr_hi) {
+    u32 addr = addr_lo | (addr_hi << 16) | (addr_hi >> 16);
+    ctx->pc = addr;
+    return ps2_enter(ctx);
 }
 
 void ps2_div(ps2_reg128 *lo, ps2_reg128 *hi, int pipe, s32 a, s32 b) {

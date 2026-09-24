@@ -18,6 +18,7 @@
 #include <unistd.h>
 #ifdef _WIN32
 #include <windows.h>
+#include <direct.h>          /* _fullpath, for the diagnostics below */
 #endif
 
 extern const u32 ps2_image_base;
@@ -62,33 +63,71 @@ const u8 *ps2_gs_framebuffer(u32 *w, u32 *h, u32 *stride);
 
 static const char *image_path = "ps2_image.bin";
 
-static int load_image(const char *dir) {
+/* Where the recompiler's output might be, in the order worth trying.  `--data`
+ * is the documented way to point at it, but the folder is often simply next to
+ * the executable or named after what the recompiler writes, so look there too
+ * rather than stopping at the first miss.  The paths are made absolute so the
+ * message below is not ambiguous when the process was started from elsewhere. */
+static const char *image_dirs[] = {
+    "generated-cnjp", "generated", "out/generated", "..", ".",
+};
+
+static int load_image(const char *dir, int dir_given) {
     char path[1024];
+    char tried[1024];
     FILE *fp;
     long n;
     u8 *dst;
-    snprintf(path, sizeof(path), "%s%s%s", dir ? dir : "",
-             (dir && *dir) ? "/" : "", image_path);
-    fp = fopen(path, "rb");
-    if (!fp) {
-        fprintf(stderr, "cannot open memory image '%s'\n", path);
-        return -1;
-    }
-    fseek(fp, 0, SEEK_END);
-    n = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    if ((u32)n != ps2_image_size)
-        ps2_log("warning: image is %ld bytes, generator recorded %u",
-                n, ps2_image_size);
-    dst = ps2_ram + (ps2_image_base & (PS2_RAM_SIZE - 1u));
-    if (fread(dst, 1, (size_t)n, fp) != (size_t)n) {
+    size_t ti = 0;
+    int i;
+
+    tried[0] = '\0';
+    for (i = -1; i < (int)(sizeof image_dirs / sizeof image_dirs[0]); i++) {
+        const char *d = (i < 0) ? dir : image_dirs[i];
+        /* Only skip a fallback that --data already named; "." is the default and
+         * still worth trying. */
+        if (i >= 0 && dir_given && d && !strcmp(dir, d)) continue;
+        snprintf(path, sizeof(path), "%s%s%s", d ? d : "",
+                 (d && *d) ? "/" : "", image_path);
+        fp = fopen(path, "rb");
+        if (!fp) {
+            char full[1024];
+            if (_fullpath(full, path, sizeof full))
+                ti += (size_t)snprintf(tried + ti, sizeof(tried) - ti,
+                                       "\n    %s", full);
+            continue;
+        }
+        fseek(fp, 0, SEEK_END);
+        n = ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+        if ((u32)n != ps2_image_size)
+            ps2_log("warning: image is %ld bytes, generator recorded %u",
+                    n, ps2_image_size);
+        dst = ps2_ram + (ps2_image_base & (PS2_RAM_SIZE - 1u));
+        if (fread(dst, 1, (size_t)n, fp) != (size_t)n) {
+            fclose(fp);
+            fprintf(stderr, "short read on memory image '%s'\n", path);
+            return -1;
+        }
         fclose(fp);
-        fprintf(stderr, "short read on memory image\n");
-        return -1;
+        if (i >= 0)
+            ps2_log("image: no --data, using '%s'", path);
+        ps2_log("image: %ld bytes loaded at %08X", n, ps2_image_base);
+        return 0;
     }
-    fclose(fp);
-    ps2_log("image: %ld bytes loaded at %08X", n, ps2_image_base);
-    return 0;
+
+    fprintf(stderr,
+        "cannot open the recompiler's memory image '%s'.\n"
+        "It is written by the recompile step into the output directory, which\n"
+        "you then pass to --data:\n"
+        "\n"
+        "  python -m ps2recomp SLPS_254.18 -o generated-cnjp ...\n"
+        "  ac5.exe --data generated-cnjp --disc <disc.iso>\n"
+        "\n"
+        "Both directories are needed: --data is the folder holding\n"
+        "%s, --disc is the ISO or extracted disc.  Looked in:%s\n",
+        image_path, image_path, tried);
+    return -1;
 }
 
 static void dump_framebuffer(const char *path) {
@@ -117,11 +156,32 @@ static volatile int watchdog_armed = 1;
 static void *watchdog_main(void *arg) {
     unsigned quiet = 0;
     u64 last = 0;
+    unsigned periodic = 0;
+    unsigned tick = 0;
     (void)arg;
-    if (watchdog_seconds == 0) return NULL;
-    while (watchdog_armed) {
+    {
+        /* PS2_TRACE_CALLS_EVERY=<n>: dump the call ring every n seconds.  When a
+         * build boots but never gets anywhere, the ring at several points in time
+         * says which screen it stopped on; a single dump at the end only says
+         * where it ended up. */
+        const char *e = getenv("PS2_TRACE_CALLS_EVERY");
+        periodic = e ? (unsigned)strtoul(e, NULL, 0) : 0;
+    }
+    if (watchdog_seconds == 0 && !periodic) return NULL;
+    while (watchdog_armed || periodic) {
         u64 now;
         sleep(1);
+        if (periodic && ++tick % periodic == 0) {
+            ps2_log("");
+            ps2_log("==== call ring at %u s, field %llu ====", tick,
+                    (unsigned long long)ps2_kernel_vblank_count());
+            ps2_dump_trace("periodic");
+            /* Printing the IPU state alongside the ring is what tells a stalled
+             * movie apart from a stalled screen: a movie that is being fed shows
+             * decode commands here, one that never started shows "idle". */
+            ps2_ipu_report();
+        }
+        if (watchdog_seconds == 0) continue;
         now = ps2_kernel_vblank_count();
         if (now != last) { last = now; quiet = 0; continue; }
         if (++quiet < watchdog_seconds) continue;
@@ -138,6 +198,24 @@ static void *watchdog_main(void *arg) {
 
 static unsigned max_vblanks;
 static int video_active;
+
+/* PS2_FB_EVERY=<n> writes the GS framebuffer to out/fb_<field>.ppm every n
+ * fields.  Diagnosing "the picture is black" from a log is guesswork: the run
+ * summary's primitive and pixel counts say whether anything was drawn, and these
+ * files say what.  PS2_FB_EVERY=0 (the default) turns it off. */
+static void periodic_framebuffer_dump(u64 field) {
+    static unsigned every;
+    static int inited;
+    char path[128];
+    if (!inited) {
+        const char *e = getenv("PS2_FB_EVERY");
+        every = e ? (unsigned)strtoul(e, NULL, 0) : 0;
+        inited = 1;
+    }
+    if (!every || field == 0 || field % every) return;
+    snprintf(path, sizeof path, "out/fb_%06llu.ppm", (unsigned long long)field);
+    dump_framebuffer(path);
+}
 
 void ps2_audio_start(void);
 void ps2_audio_stop(void);
@@ -428,6 +506,7 @@ static LONG WINAPI ps2_crash_filter(EXCEPTION_POINTERS *ep) {
 int main(int argc, char **argv) {
     ps2_settings_defaults(&ps2_cfg);
     const char *dir = ".";
+    int dir_given = 0;
     const char *disc = NULL;
     int want_video = 1, want_profile = 0, want_selftest = 0, want_vif_test = 0, want_vu_test = 0;
     int want_gs_test = 0, want_spu2_test = 0, want_hle_test = 0;
@@ -447,7 +526,7 @@ int main(int argc, char **argv) {
 #endif
 
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--data") && i + 1 < argc) dir = argv[++i];
+        if (!strcmp(argv[i], "--data") && i + 1 < argc) { dir = argv[++i]; dir_given = 1; }
         else if (!strcmp(argv[i], "--dump-state") && i + 1 < argc)
             ps2_state_dump_arm(argv[++i]);
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc)
@@ -626,7 +705,10 @@ int main(int argc, char **argv) {
         extern void ps2_hook_selftest_attach(void);
         ps2_hook_selftest_attach();
     }
-    if (load_image(dir) != 0) return 1;
+    if (load_image(dir, dir_given) != 0) return 1;
+    /* Keep a copy of the executable image before the guest can overwrite any of
+     * it; code-signature lookups read that, not guest RAM. */
+    ps2_image_snapshot(ps2_image_base, ps2_image_size);
     ps2_mod_init();
     if (disc && ps2_vfs_open(disc) != 0)
         ps2_log("warning: no disc at '%s'; CDVD requests will fail", disc);
@@ -669,7 +751,7 @@ int main(int argc, char **argv) {
 
     t0 = clock();
     ps2_log("entering recompiled guest at %08X", ps2_entry_point);
-    ps2_dispatch(&ps2_cpu, ps2_entry_point);
+    PS2_CALL_DISPATCH(&ps2_cpu, ps2_entry_point);
     watchdog_armed = 0;
     ps2_log("guest entry returned after %.2fs",
             (double)(clock() - t0) / CLOCKS_PER_SEC);
@@ -678,6 +760,7 @@ int main(int argc, char **argv) {
            && (double)(clock() - t0) / CLOCKS_PER_SEC < budget) {
         ps2_kernel_vblank(&ps2_cpu);
         frames++;
+        periodic_framebuffer_dump(ps2_kernel_vblank_count());
         if (max_frames == 0 && frames > 100000) break;
     }
 

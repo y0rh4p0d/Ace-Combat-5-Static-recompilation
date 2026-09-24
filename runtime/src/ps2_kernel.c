@@ -305,7 +305,7 @@ static void *thread_trampoline(void *arg) {
     t->ctx.r[31].ud[0] = 0;
     ps2_log("kernel: thread %d entering %08X (sp=%08X gp=%08X)",
             self, t->entry, (u32)t->ctx.r[29].ud[0], (u32)t->gp);
-    ps2_dispatch(&t->ctx, t->entry);
+    PS2_CALL_DISPATCH(&t->ctx, t->entry);
 
     pthread_mutex_lock(&ee_lock);
     t->status = THS_DORMANT;
@@ -647,7 +647,7 @@ void ps2_kernel_run_intc(ps2_ctx *ctx, int cause) {
         ctx->r[6].ud[0] = 0;
         ctx->r[31].ud[0] = 0;
         ctx->in_interrupt = 1;
-        ps2_dispatch(ctx, intc_h[i].handler);
+        PS2_CALL_DISPATCH(ctx, intc_h[i].handler);
         ctx->in_interrupt = 0;
     }
 }
@@ -665,7 +665,7 @@ void ps2_kernel_run_dmac(ps2_ctx *ctx, int cause) {
         ctx->r[6].ud[0] = 0;
         ctx->r[31].ud[0] = 0;
         ctx->in_interrupt = 1;
-        ps2_dispatch(ctx, dmac_h[i].handler);
+        PS2_CALL_DISPATCH(ctx, dmac_h[i].handler);
         ctx->in_interrupt = 0;
     }
 }

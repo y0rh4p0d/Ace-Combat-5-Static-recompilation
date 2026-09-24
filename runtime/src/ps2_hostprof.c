@@ -27,6 +27,14 @@ static void hp_record(u64 rip) {
     hp_dropped++;
 }
 
+/* The instruction pointer lives in a differently named CONTEXT member per
+ * architecture: Rip on x86_64, Pc on ARM64.  There is no common spelling. */
+#if defined(_M_ARM64) || defined(__aarch64__)
+#  define HP_CTX_PC(c) ((u64)(c).Pc)
+#else
+#  define HP_CTX_PC(c) ((u64)(c).Rip)
+#endif
+
 static void *hp_main(void *unused) {
     HANDLE t = CreateWaitableTimerExW(NULL, NULL, 0x00000002 ,
                                       TIMER_ALL_ACCESS);
@@ -44,7 +52,7 @@ static void *hp_main(void *unused) {
         if (SuspendThread(hp_target) == (DWORD)-1) continue;
         memset(&c, 0, sizeof c);
         c.ContextFlags = CONTEXT_CONTROL;
-        if (GetThreadContext(hp_target, &c)) hp_record((u64)c.Rip);
+        if (GetThreadContext(hp_target, &c)) hp_record(HP_CTX_PC(c));
         ResumeThread(hp_target);
     }
     if (t) CloseHandle(t);

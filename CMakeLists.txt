@@ -121,10 +121,62 @@ target_link_libraries(ac5 PRIVATE Threads::Threads m
                                   ${SDL3_LIBRARIES} Vulkan::Vulkan lua54)
 target_link_options(ac5 PRIVATE -static-libstdc++ -static-libgcc)
 
+# --- runtime DLLs -----------------------------------------------------------
+# MSYS2's SDL3 and pthread are DLLs, so an ac5.exe started from outside an MSYS2
+# shell cannot find them unless they sit next to it.  They are small and
+# permissively licensed, so the repo carries them per architecture and the build
+# copies the matching pair.  vulkan-1.dll is deliberately not bundled: it comes
+# from the graphics driver.
+option(PS2_COPY_RUNTIME_DLLS
+       "copy SDL3.dll and libwinpthread-1.dll next to ac5.exe" ON)
+
+if(PS2_COPY_RUNTIME_DLLS AND WIN32)
+    # Keep this in step with the toolchain file, and allow an explicit override
+    # because both MSYS2 toolchains also produce a host-arch binary.
+    if(DEFINED PS2_DLL_ARCH)
+        set(_ps2_dll_arch "${PS2_DLL_ARCH}")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+        set(_ps2_dll_arch "arm64")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|x86_64|amd64)$")
+        set(_ps2_dll_arch "x64")
+    elseif(CMAKE_C_COMPILER_TARGET MATCHES "^aarch64")
+        set(_ps2_dll_arch "arm64")
+    else()
+        set(_ps2_dll_arch "x64")
+    endif()
+
+    set(_ps2_dll_dir "${CMAKE_SOURCE_DIR}/runtime/dll/${_ps2_dll_arch}")
+    set(_ps2_dlls
+        "${_ps2_dll_dir}/SDL3.dll"
+        "${_ps2_dll_dir}/libwinpthread-1.dll")
+
+    if(EXISTS "${_ps2_dll_dir}/SDL3.dll")
+        add_custom_command(TARGET ac5 POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${_ps2_dlls} "$<TARGET_FILE_DIR:ac5>"
+            COMMENT "runtime DLLs: ${_ps2_dll_arch} -> $<TARGET_FILE_DIR:ac5>")
+    else()
+        message(WARNING
+            "PS2_COPY_RUNTIME_DLLS is on but ${_ps2_dll_dir} has no SDL3.dll; "
+            "copy SDL3.dll and libwinpthread-1.dll next to ac5.exe by hand, or "
+            "point PS2_DLL_ARCH at x64 or arm64.")
+    endif()
+endif()
+
 option(PS2_HOOK_ENTRIES "patchable entry sleds in generated code, for mod hooks" ON)
 set(GEN_COMPILE_OPTIONS "${GEN_OPT}")
-if(PS2_HOOK_ENTRIES)
+# -fpatchable-function-entry emits NOPs ahead of each function and tells the
+# unwind tables the prologue is longer than it is.  clang's SEH writer and that
+# combination disagree on Windows/AArch64 ("Incorrect size for func_... prologue:
+# N bytes of instructions in range, but .seh directives corresponding to 4"), so
+# the sled is a GCC-only feature there.  Mod entry hooks still work; they just
+# cannot be installed by patching a sled that does not exist.
+if(PS2_HOOK_ENTRIES AND NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang" AND WIN32))
   list(APPEND GEN_COMPILE_OPTIONS "-fpatchable-function-entry=8")
+elseif(PS2_HOOK_ENTRIES)
+  message(STATUS
+    "PS2_HOOK_ENTRIES: disabled for clang on Windows (incompatible with SEH "
+    "unwind data)")
 endif()
 set_source_files_properties(${GENERATED_SOURCES} PROPERTIES
                             COMPILE_OPTIONS "${GEN_COMPILE_OPTIONS}")

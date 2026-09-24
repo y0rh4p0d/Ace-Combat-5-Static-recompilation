@@ -5,7 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define F_SUN_FLARE 0x00118BC8u
+#define F_SUN_FLARE_US 0x00118BC8u
+static u32 sun_flare_addr;
 static const u32 sun_flare_w[2] = { 0x27BDFB70u, 0xFFB70458u };
 
 static struct { u32 obj, pkt, gp; float arg; } fl_in;
@@ -181,12 +182,17 @@ static int tap_flare(ps2_ctx *ctx, void *u) {
 void rn_fixes_init(void) {
     const char *e = getenv("PS2_FIX_FLARE");
     if (e && *e == '0') return;
-    if (ps2_r32(F_SUN_FLARE) != sun_flare_w[0] || ps2_r32(F_SUN_FLARE + 4u) != sun_flare_w[1]) {
-        ps2_log("rn-fix: the sun flare %08X does not match; not fixed", F_SUN_FLARE);
+    /* The address is a US-release constant; ask the tap layer where the same
+     * function ended up in whichever executable is loaded. */
+    sun_flare_addr = rn_resolve_addr(F_SUN_FLARE_US);
+    if (ps2_r32(sun_flare_addr) != sun_flare_w[0]
+        || ps2_r32(sun_flare_addr + 4u) != sun_flare_w[1]) {
+        ps2_log("rn-fix: the sun flare %08X does not match; not fixed",
+                sun_flare_addr);
         return;
     }
-    if (ps2_hook_before(F_SUN_FLARE, tap_flare_enter, NULL, 110, "rn-fixes") < 0
-        || ps2_hook_after(F_SUN_FLARE, tap_flare, NULL, 110, "rn-fixes") < 0)
+    if (ps2_hook_before(sun_flare_addr, tap_flare_enter, NULL, 110, "rn-fixes") < 0
+        || ps2_hook_after(sun_flare_addr, tap_flare, NULL, 110, "rn-fixes") < 0)
         ps2_log("rn-fix: the hook layer refused the sun flare fix");
 }
 

@@ -679,9 +679,15 @@ class Emitter:
                 self.w(out, "%s(ctx);" % fname(target), ind)
             return
         if tail:
-            self.w(out, "{ PS2_TAIL return ps2_dispatch(ctx, 0x%08Xu); }" % target, ind)
+            # PS2_DISPATCH sets ctx->pc and tail-calls the dispatcher.  It is a
+            # statement rather than an expression deliberately: clang's
+            # [[clang::musttail]] requires the call to be the returned
+            # expression, so the `return` has to live inside the macro, and
+            # `PS2_TAIL return` followed by an expression macro would expand to
+            # `return` inside a do/while block, which is not valid C.
+            self.w(out, "PS2_DISPATCH(ctx, 0x%08Xu);" % target, ind)
         else:
-            self.w(out, "ps2_dispatch(ctx, 0x%08Xu);" % target, ind)
+            self.w(out, "PS2_CALL_DISPATCH(ctx, 0x%08Xu);" % target, ind)
 
     def emit_transfer(self, fn, ins, out, ind=1):
         self.ee_slots += 1
@@ -710,7 +716,7 @@ class Emitter:
         if cat == CAT_JUMPR and ins.name == "JR":
             if ins.rs == 31:
                 self._delay(fn, ins, out, ind)
-                self.w(out, "return;", ind)
+                self.w(out, "return NULL;", ind)
                 return
             sw = p.switches.get(a)
             self.w(out, "{ u32 _t = %s;" % ru32(ins.rs), ind)
@@ -727,7 +733,7 @@ class Emitter:
                 self.w(out, "default: break;", ind + 2)
                 self.w(out, "}", ind + 1)
             self.w(out, "ctx->pc = 0x%08Xu;" % a, ind + 1)
-            self.w(out, "{ PS2_TAIL return ps2_dispatch(ctx, _t); } }", ind + 1)
+            self.w(out, "PS2_DISPATCH(ctx, _t); }", ind + 1)
             return
 
         if cat == CAT_JUMPR and ins.name == "JALR":
@@ -736,7 +742,12 @@ class Emitter:
             if w:
                 self.w(out, w, ind + 1)
             self._delay(fn, ins, out, ind + 1)
-            self.w(out, "ps2_dispatch(ctx, _t); }", ind + 1)
+            # A call, not a tail call: the guest comes back to the instruction
+            # after the delay slot, so this frame has to survive.  The dispatch
+            # table is consulted directly rather than through the dispatcher so
+            # an unknown target is still reported.
+            self.w(out, "if (ps2_fn_known(_t)) { PS2_CALL_DISPATCH(ctx, _t); } "
+                        "else { ps2_unknown_target(ctx, _t); } }", ind + 1)
             return
 
         cond = self._branch_cond(ins)
@@ -821,9 +832,11 @@ class Emitter:
             self.overrides_used[fn.entry] = ov
             out.append("/* %08X  %s  -- HLE override -> %s() */"
                        % (fn.entry, nm or "", ov))
-            out.append("PS2_NOIPA void %s(ps2_ctx *ctx) {" % fname(fn.entry))
+            out.append("PS2_NOIPA void *%s(ps2_ctx *ctx) {"
+                       % fname(fn.entry))
             out.append("    PS2_ENTER(0x%08Xu);" % fn.entry)
             out.append("    %s(ctx);" % ov)
+            out.append("    return NULL;")
             out.append("}")
             return "\n".join(out) + "\n"
 
@@ -851,7 +864,7 @@ class Emitter:
         hdr = "/* %08X  %s  (%d insns" % (fn.entry, nm or "", len(fn.addrs))
         hdr += ") */"
         out.append(hdr)
-        out.append("PS2_NOIPA void %s(ps2_ctx *ctx) {" % fname(fn.entry))
+        out.append("PS2_NOIPA void *%s(ps2_ctx *ctx) {" % fname(fn.entry))
         out.append("    PS2_ENTER(0x%08Xu);" % fn.entry)
         hk = self.hooks.get(fn.entry)
         if hk:
@@ -891,21 +904,35 @@ class Emitter:
                 if p.in_text(nat):
                     self._target_call(fn, nat, out, 1, tail=True)
                 else:
-                    self.w(out, "return;", 1)
+                    # Ran off the end of the guest's code: returning NULL unwinds
+                    # this function back into whoever dispatched to it.
+                    self.w(out, "return NULL;", 1)
         self.flush_slots(out)
         if ds_entries:
-            self.w(out, "return;")
+            self.w(out, "return NULL;")
         for a in sorted(ds_entries):
             out.append("%s:;" % label(a))
             self.emit_insn(p.insns[a], out, 1)
             self.flush_slots(out)
             self.w(out, "goto %s;" % label(a + 4))
+        # Fallthrough tail: any path that reaches the closing brace still has to
+        # produce a value for the void* return type.
+        out.append("    return NULL;")
         out.append("}")
         return "\n".join(out) + "\n"
 
     def emit_all(self, outdir, per_file=250):
         p = self.p
         os.makedirs(outdir, exist_ok=True)
+        # Remove output from an earlier run.  A region change can produce fewer
+        # files than last time, and CMake globs ps2_code_*.c, so leftovers would
+        # be compiled from a previous executable's addresses.
+        import glob
+        for stale in glob.glob(os.path.join(outdir, "ps2_code_*.c")):
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
         entries = sorted(p.functions)
         chunks = [entries[i:i + per_file]
                   for i in range(0, len(entries), per_file)]
@@ -925,10 +952,10 @@ class Emitter:
             for e in entries:
                 nm = self.sym(e)
                 if nm:
-                    fp.write("PS2_NOIPA void %s(ps2_ctx *ctx);  /* %s */\n"
+                    fp.write("PS2_NOIPA void *%s(ps2_ctx *ctx);  /* %s */\n"
                              % (fname(e), nm))
                 else:
-                    fp.write("PS2_NOIPA void %s(ps2_ctx *ctx);\n" % fname(e))
+                    fp.write("PS2_NOIPA void *%s(ps2_ctx *ctx);\n" % fname(e))
             fp.write("#ifdef __cplusplus\n}\n#endif\n")
             fp.write("#endif\n")
 

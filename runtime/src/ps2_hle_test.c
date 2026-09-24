@@ -74,9 +74,9 @@ int ps2_hle_selftest(const char *disc) {
         ps2_pad_host[0].buttons = 8;
         guest.r[4].ud[0] = send;
         guest.r[29].ud[0] = 0x01ff0000;
-        ps2_dispatch(&guest, 0x0032ad00);
+        PS2_CALL_DISPATCH(&guest, 0x0032ad00);
         guest.r[4].ud[0] = send;
-        ps2_dispatch(&guest, 0x0032ad00);
+        PS2_CALL_DISPATCH(&guest, 0x0032ad00);
         int input_bad = ps2_r8(send + 920) != 0
                      || !(ps2_r16(send + 916) & 8)
                      || !(ps2_r16(send + 918) & 8);

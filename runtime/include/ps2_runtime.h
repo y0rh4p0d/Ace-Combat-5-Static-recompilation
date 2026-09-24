@@ -19,8 +19,19 @@ typedef int16_t  s16;
 typedef int32_t  s32;
 typedef int64_t  s64;
 
+/* Guaranteed tail calls.  This matters more than it looks: the recompiled code
+ * turns guest functions that end in a jump into a tail call, so without it a
+ * long chain of guest functions eats host stack until the process dies.
+ *
+ * Clang spells it [[clang::musttail]] and GCC spells it [[gnu::musttail]].
+ * Clang silently ignores an attribute it does not know, so the spelling has to
+ * be right rather than merely accepted; see the check in CMakeLists.txt.
+ *
+ * NOTE: on AArch64 ``__attribute__((musttail))`` is accepted but ignored, which
+ * is exactly the failure mode that looks fine at build time and blows the stack
+ * at run time, so do not "simplify" this back to the GNU spelling. */
 #if defined(__clang__) && __clang_major__ >= 13
-#  define PS2_TAIL __attribute__((musttail))
+#  define PS2_TAIL [[clang::musttail]]
 #elif defined(__GNUC__) && __GNUC__ >= 15
 #  define PS2_TAIL [[gnu::musttail]]
 #else
@@ -28,7 +39,16 @@ typedef int64_t  s64;
 #  define PS2_NO_MUSTTAIL 1
 #endif
 
-#if defined(__GNUC__)
+/* Recompiled functions must not be merged with each other or interprocedural
+ * analysis will happily fold a guest function into its caller and destroy the
+ * one-function-per-address layout the dispatcher depends on.
+ *
+ * GCC spells this `noipa`; clang has no such attribute and warns 10,000+ times
+ * if it is used anyway.  clang's `optnone` is the closest equivalent and also
+ * keeps the function as its own body. */
+#if defined(__clang__)
+#  define PS2_NOIPA __attribute__((optnone))
+#elif defined(__GNUC__) && __GNUC__ >= 8
 #  define PS2_NOIPA __attribute__((noipa))
 #else
 #  define PS2_NOIPA
@@ -122,7 +142,12 @@ typedef struct ps2_ctx {
 
 extern const ps2_reg128 ps2_zero_q;
 
-typedef void (*ps2_fn)(ps2_ctx *ctx);
+/* Every recompiled guest function has this shape.  It returns void* purely so
+ * that the indirect tail call in ps2_enter() is legal under clang's
+ * [[clang::musttail]], which - unlike GCC's - refuses a tail call unless the
+ * callee's signature matches the caller's exactly.  The value is always NULL
+ * and no caller looks at it. */
+typedef void *(*ps2_fn)(ps2_ctx *ctx);
 
 typedef struct ps2_func_entry {
     u32 addr;
@@ -132,6 +157,8 @@ typedef struct ps2_func_entry {
 extern const ps2_func_entry ps2_func_table[];
 extern const unsigned ps2_func_count;
 extern const u32 ps2_entry_point;
+extern const u32 ps2_image_base;   /* where the executable's image is loaded */
+extern const u32 ps2_image_size;
 
 typedef struct ps2_symbol {
     u32 addr;
@@ -196,6 +223,15 @@ void ps2_prof_report(unsigned top);
 
 extern u8 *ps2_pt[PS2_PT_ENTRIES];
 extern u8 *ps2_ram;
+
+/* Snapshot of the loaded executable image, taken right after it is loaded and
+ * before the guest runs.  Guest RAM is not a reliable place to read the original
+ * code from later: overlays and the game's own loader overwrite parts of it, so
+ * anything that wants to recognise a function by its instructions has to look
+ * here.  Nothing is allocated until ps2_image_snapshot() is called. */
+void ps2_image_snapshot(u32 base, u32 len);
+u32  ps2_image_word(u32 addr);
+int  ps2_image_has(u32 addr, u32 len);
 extern u8 *ps2_spr;
 extern u8 *ps2_iop_ram;
 
@@ -356,9 +392,39 @@ void ps2_tlb_op(ps2_ctx *ctx, int op);
 void ps2_syscall(ps2_ctx *ctx);
 void ps2_trap(ps2_ctx *ctx, u32 insn);
 void ps2_unimplemented(ps2_ctx *ctx, u32 pc, u32 insn);
-void ps2_dispatch(ps2_ctx *ctx, u32 addr);
+/* Two entry points into the guest, because clang and GCC disagree about what a
+ * tail call may look like.
+ *
+ * clang's [[clang::musttail]] requires the callee's signature to match the
+ * caller's exactly, in argument count as well as return type.  Every recompiled
+ * function is `void *(ps2_ctx *)`, so the call the generated code makes must
+ * have exactly one argument, and it must be the last thing that happens.  GCC's
+ * [[gnu::musttail]] has no such rule, but there is no reason to diverge.
+ *
+ *   ps2_enter(ctx)               resolves ctx->pc and tail-calls it
+ *   PS2_CALL_DISPATCH(ctx, addr) wrapper for runtime callers that know the address
+ *   PS2_DISPATCH(ctx, addr)      what generated code emits: sets ctx->pc and
+ *                                tail-calls ps2_enter
+ *
+ * Splitting it this way keeps the diagnostic for an unknown target (it needs
+ * arguments, so it cannot be reached through a one-argument tail call) while
+ * leaving the hot path a single indirect jump that does not grow the stack.
+ */
+void *ps2_enter(ps2_ctx *ctx);
+void *ps2_dispatch(ps2_ctx *ctx, u32 addr_lo, u32 addr_hi);
 ps2_fn ps2_dispatch_lookup(u32 addr);
 int    ps2_dispatch_redirect(u32 addr, ps2_fn fn);
+/* Generated code emits PS2_DISPATCH(ctx, addr) as a statement, immediately
+ * followed by `}` closing the enclosing block; the return is part of the macro
+ * because clang's musttail has to see the call as the returned expression. */
+#define PS2_DISPATCH(ctx, addr)                                                \
+    do {                                                                       \
+        (ctx)->pc = (u32)(addr);                                               \
+        PS2_TAIL return ps2_enter(ctx);                                        \
+    } while (0)
+/* For the runtime, where the address is not known at compile time and a plain
+ * call is wanted. */
+#define PS2_CALL_DISPATCH(ctx, addr) ps2_dispatch((ctx), (u32)(addr), 0u)
 void ps2_unknown_target(ps2_ctx *ctx, u32 addr);
 
 u32  ps2_cfc1(ps2_ctx *ctx, int reg);

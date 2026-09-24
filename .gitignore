@@ -1,5 +1,9 @@
 build/
 generated/
+# the recompiler's output for the Japanese / Chinese executable
+generated-cnjp/
+# fetched cross-compilation toolchain (tools/setup_arm64_toolchain.py)
+work/
 *.o
 *.obj
 *.exe
@@ -28,8 +32,13 @@ __pycache__/
 *.PAC
 *.pac
 tests/mods/**/*.dll
+saves/
 saves/mods/
 tests/mods/mount_test/
 tests/mods/archive_test/
 tests/mods/bgm_test/
 tests/mods_resize/
+
+# Disc images: large, and not ours to redistribute.
+*.iso
+*.ISO

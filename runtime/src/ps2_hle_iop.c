@@ -170,7 +170,7 @@ static int nufile_rpc(ps2_ctx *ctx, u32 fno, u32 send, int ssize,
         sub.r[4].ud[0] = 0;
         sub.r[5].ud[0] = (u64)(s64)(s32)result;
         sub.r[6].ud[0] = (u64)cb_sema;
-        ps2_dispatch(&sub, cb);
+        PS2_CALL_DISPATCH(&sub, cb);
     }
     return rc;
 }
@@ -820,10 +820,53 @@ void hook_scene_next(ps2_ctx *ctx) {
 
 #define NUSNDSTR_SID 0x81000201u
 
-#define NUSNDSTR_SEQ 0x0047EC9Cu
+/* The sound-transfer counter the guest polls to decide when a sound bank has
+ * finished loading.  It is a plain variable in the guest's own data, and like
+ * almost everything else in that area it MOVED between regions: the US build has
+ * it at 0x0047EC9C, the Japanese/Chinese build at 0x0047F49C (+0x800).  Reading
+ * the US address on the JP build returns a constant zero, so the scene state
+ * machine waits for a transfer that has in fact already completed, and the game
+ * never leaves its first screen -- a black window with the vblank pump running
+ * normally.
+ *
+ * The address is therefore resolved at run time by looking for the code that
+ * writes it, rather than being fixed at compile time.
+ */
+#define NUSNDSTR_SEQ_US   0x0047EC9Cu
+#define NUSNDSTR_SEQ_JP   0x0047F49Cu
 
-static u32 nusndstr_seq;
+static u32 nusndstr_seq_addr;
+static u32 nusndstr_seq;                         /* current address in use */
 static u64 nusndstr_transfers, nusndstr_bytes;
+
+/* The counter's address is decided by observation, not by a build-time constant.
+ *
+ * Both known addresses are read every time the guest asks about transfers, and
+ * whichever one is actually moving is the one this build uses.  Starting on the
+ * US address costs nothing: on the Japanese build the very first transfer lands
+ * and the next read notices the JP address moved while the US one did not, and
+ * switches.  That is what makes this work without needing to know which region is
+ * loaded, and it self-corrects if a future build puts the counter somewhere else
+ * again as long as one of the two addresses is hit.
+ */
+static u32 nusndstr_counter_addr(void) {
+    u32 us, jp;
+    if (nusndstr_seq_addr) return nusndstr_seq_addr;
+
+    us = ps2_r32(NUSNDSTR_SEQ_US);
+    jp = ps2_r32(NUSNDSTR_SEQ_JP);
+    if (us == 0 && jp != 0) {
+        nusndstr_seq_addr = NUSNDSTR_SEQ_JP;
+        ps2_log("nusndstr: the transfer counter is at %08X on this build (the US "
+                "address %08X reads 0, this one reads %u)",
+                NUSNDSTR_SEQ_JP, NUSNDSTR_SEQ_US, jp);
+    } else {
+        nusndstr_seq_addr = NUSNDSTR_SEQ_US;
+    }
+    return nusndstr_seq_addr;
+}
+
+#define NUSNDSTR_SEQ nusndstr_counter_addr()
 
 #define NUSNDSTR_NCMD 18u
 
@@ -1087,6 +1130,23 @@ static int nusndstr_rpc(ps2_ctx *ctx, u32 fno, u32 send, int ssize,
     }
     if (fno == 1) {
         u32 issued = ps2_r32(NUSNDSTR_SEQ);
+        /* The guest advances this counter itself; the runtime never writes it.
+         * Watching it is how a stalled sound-bank load is told apart from a
+         * stalled screen: the JP/CN build's opening sequence waits for a transfer
+         * to complete here before advancing its scene state, and on that build the
+         * counter never moves off zero. */
+        {
+            static u32 last_issued = 0xFFFFFFFFu;
+            static u64 last_field;
+            u64 field = ps2_kernel_vblank_count();
+            if (issued != last_issued || field - last_field >= 600u) {
+                ps2_log("nusndstr: counter at %08X = %u (baseline %u) at field %llu",
+                        NUSNDSTR_SEQ, issued, nusndstr_seq,
+                        (unsigned long long)field);
+                last_issued = issued;
+                last_field = field;
+            }
+        }
         if (send && ssize >= 4)
             nusndstr_bytes += nusndstr_walk(send, ssize);
         if (issued >= nusndstr_seq && issued - nusndstr_seq < 0x100000u) {

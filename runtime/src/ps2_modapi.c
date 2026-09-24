@@ -245,7 +245,7 @@ static uint32_t api_call_guest(ac5_ctx *ctx, uint32_t addr,
     for (int i = 0; i < nargs; i++)
         sub.r[i < 4 ? 4 + i : 8 + (i - 4)].sd[0] = (s64)(s32)args[i];
     sub.r[31].ud[0] = 0;
-    ps2_dispatch(&sub, addr);
+    PS2_CALL_DISPATCH(&sub, addr);
     return (uint32_t)sub.r[2].uw[0];
 }
 

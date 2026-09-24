@@ -3949,11 +3949,33 @@ int ps2_gs_present_now(void) {
         }
         if (stale && !keep) {
             static u32 said;
+            /* Counted rather than only logged: the question that diagnoses a
+             * permanently black window is whether the display ever pointed at
+             * something that had been drawn, and that shows up over a whole run,
+             * not in the first few occurrences. */
+            static u32 n_blank, n_ok, first_base, last_base;
+            if (!n_blank && !n_ok) first_base = base;
+            last_base = base;
+            n_blank++;
             if (said++ < 8u)
                 ps2_log("gs: field %u shows base %u, which holds nothing current "
                         "(%s) -- black", ps2_gs_frame_count, base,
                         slot < 0 ? "never a target" : "written over since it was drawn");
+            if (PS2_ENV("PS2_TRACE_DISP") && (n_blank + n_ok) % 120u == 0u)
+                ps2_log("disp: %u of %u fields showed nothing current | DISPFB base "
+                        "first=%u last=%u | render targets=%u",
+                        n_blank, n_blank + n_ok, first_base, last_base, gs_rt_n);
             return ps2_vk_present(dbx, dby, dw, dh, PS2_VK_PRESENT_BLANK);
+        }
+        {
+            static u32 n_blank, n_ok, first_base, last_base;
+            n_ok++;
+            if (!first_base) first_base = base;
+            last_base = base;
+            if (PS2_ENV("PS2_TRACE_DISP") && (n_blank + n_ok) % 120u == 0u)
+                ps2_log("disp: %u of %u fields showed nothing current | DISPFB base "
+                        "first=%u last=%u slot=%d | render targets=%u",
+                        n_blank, n_blank + n_ok, first_base, last_base, slot, gs_rt_n);
         }
     }
     {

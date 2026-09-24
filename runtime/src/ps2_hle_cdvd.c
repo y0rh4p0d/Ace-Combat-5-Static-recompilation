@@ -34,7 +34,7 @@ static void raise_callback(ps2_ctx *ctx, int reason) {
     {
         ps2_ctx sub = *ctx;
         sub.r[4].sd[0] = reason;
-        ps2_dispatch(&sub, cd_callback);
+        PS2_CALL_DISPATCH(&sub, cd_callback);
     }
 }
 

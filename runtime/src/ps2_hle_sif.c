@@ -146,7 +146,7 @@ void hle_sceSifCallRpc(ps2_ctx *ctx) {
     if ((mode & SIF_RPCM_NOWAIT) && endfn) {
         ps2_ctx sub = *ctx;
         sub.r[4].ud[0] = para;
-        ps2_dispatch(&sub, endfn);
+        PS2_CALL_DISPATCH(&sub, endfn);
     }
     HRET(rc);
 }

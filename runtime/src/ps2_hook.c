@@ -11,8 +11,12 @@
 
 #define HOOK_MAX_CHAIN   8
 #define STUB_BYTES       16
+/* An AArch64 stub needs a literal pool entry for the thunk address, so it takes
+ * STUB_BYTES + 8.  Size the pool with the larger of the two so the count is
+ * right on both architectures. */
+#define STUB_STRIDE      (STUB_BYTES + 8)
 #define STUB_POOL_BYTES  (64u * 1024u)
-#define HOOK_MAX_SITES   (STUB_POOL_BYTES / STUB_BYTES)
+#define HOOK_MAX_SITES   (STUB_POOL_BYTES / STUB_STRIDE)
 
 typedef struct {
     ps2_hook_fn fn;
@@ -53,7 +57,44 @@ static unsigned nredirects, credirects;
 
 static int next_handle = 1;
 
-#if defined(_WIN32) && defined(__x86_64__)
+/* Entry detours.
+ *
+ * A patched function jumps to a stub, which loads a site id and branches to the
+ * thunk below.  The thunk calls ps2_hook_enter(id, ctx); that returns either the
+ * address of the untouched function body (so the thunk jumps there, and the
+ * guest runs its own code after the hooks have seen the call) or NULL when a
+ * hook replaced the function outright, in which case the thunk returns to the
+ * caller.
+ *
+ * The thunk has to preserve the one argument the recompiled functions take, and
+ * it must not disturb the guest's stack layout, because the code it jumps to
+ * expects to have been entered directly.
+ *
+ * Non-volatile registers carry the guest's state across a call: x19..x28 are
+ * callee-saved, so calling ps2_hook_enter from the thunk is safe, but the
+ * context pointer in x0 is volatile and has to be preserved across the call.
+ * The id is smuggled in x10/w10, which is a caller-saved scratch register that
+ * is not used to pass arguments, so the stub does not have to touch the stack.
+ */
+
+#if defined(_WIN32) && defined(__aarch64__)
+/* x10 = site id, x0 = ps2_ctx *. */
+__asm__(
+    ".text\n"
+    ".globl ps2_hook_thunk\n"
+    "ps2_hook_thunk:\n"
+    "    stp  x29, x30, [sp, #-16]!\n"   /* keep the stack 16-byte aligned */
+    "    mov  x29, sp\n"
+    "    mov  w1, w10\n"                 /* arg1 = id                    */
+    "    bl   ps2_hook_enter\n"          /* arg0 = ctx (already in x0)   */
+    "    ldp  x29, x30, [sp], #16\n"
+    "    cbz  x0, 1f\n"
+    "    br   x0\n"                      /* run the original body        */
+    "1:  ret\n");
+void ps2_hook_thunk(void);
+#define HOOK_SUPPORTED 1
+#define HOOK_ID_REG "w10"
+#elif defined(_WIN32) && defined(__x86_64__)
 __asm__(
     ".text\n"
     ".globl ps2_hook_thunk\n"
@@ -117,7 +158,7 @@ void *ps2_hook_enter(u32 id, ps2_ctx *ctx) {
         call_depth++;
         if (!rep || !rep(ctx, rep_user)) {
             if (rep) s->declined++;
-            ((ps2_fn)(void *)(s->host + 8))(ctx);
+            (void)((ps2_fn)(void *)(s->host + 8))(ctx);
         }
         cur_frame = &fr;
         for (unsigned i = 0; i < n; i++) chain[i].fn(ctx, chain[i].user);
@@ -208,7 +249,8 @@ int ps2_hook_init(void) {
 #if !HOOK_SUPPORTED
     if (!hook_state) {
         hook_state = -1;
-        ps2_log("hook: detours are implemented for 64-bit Windows only");
+        ps2_log("hook: entry detours are implemented for 64-bit Windows "
+                "x86_64 and ARM64 only");
     }
     return -1;
 #else
@@ -231,6 +273,97 @@ int ps2_hook_init(void) {
 }
 
 #if HOOK_SUPPORTED
+
+#if defined(__aarch64__)
+
+/* AArch64 encodings used to splice the detour in. */
+static u32 a64_movz_w(int rd, u32 imm16) {          /* movz Wd, #imm16      */
+    return 0x52800000u | ((imm16 & 0xFFFFu) << 5) | (u32)(rd & 31);
+}
+static u32 a64_movk_w(int rd, u32 imm16, int shift) { /* movk Wd, #imm16, lsl n */
+    return 0x72800000u | ((u32)(shift / 16) << 21)
+           | ((imm16 & 0xFFFFu) << 5) | (u32)(rd & 31);
+}
+static u32 a64_ldr_imm(int rt, int rn, int off) {   /* ldr Xt, [Xn, #off]   */
+    return 0xF9400000u | ((u32)(off / 8) << 10) | ((u32)(rn & 31) << 5)
+           | (u32)(rt & 31);
+}
+static u32 a64_br(int rn) { return 0xD61F0000u | ((u32)(rn & 31) << 5); }
+static u32 a64_b(long long from, long long to) {    /* b  <to>              */
+    long long d = to - from;
+    return 0x14000000u | (u32)((d >> 2) & 0x03FFFFFFll);
+}
+static int a64_b_reachable(long long from, long long to) {
+    long long d = to - from;
+    return d >= -0x8000000ll && d <= 0x7FFFFFCll;
+}
+
+/* stub (16 bytes):  movz/movk id -> x10 ; ldr x16,[pc,#8] ; br x16 ; <thunk> */
+static int write_stub_a64(u8 *stub, unsigned id, void *thunk) {
+    u64 target = (u64)(uintptr_t)thunk;
+    memcpy(stub + 0, &(u32){ a64_movz_w(10, id & 0xFFFFu) }, 4);
+    memcpy(stub + 4, &(u32){ a64_movk_w(10, (id >> 16) & 0xFFFFu, 16) }, 4);
+    memcpy(stub + 8, &(u32){ a64_ldr_imm(16, 31, 8) }, 4);   /* loads stub+16 */
+    memcpy(stub + 12, &(u32){ a64_br(16) }, 4);
+    memcpy(stub + 16, &target, 8);
+    return 1;
+}
+#else
+/* Not AArch64: only the x86_64 generate path below is compiled, and it does not
+ * call this. */
+static int write_stub_a64(u8 *stub, unsigned id, void *thunk) {
+    (void)stub; (void)id; (void)thunk;
+    return 0;
+}
+#endif  /* __aarch64__ */
+
+/* Entry detour, per architecture. */
+#if defined(__aarch64__)
+static int write_detour(hook_site *s) {
+    DWORD old;
+    unsigned id = (unsigned)(s - sites);
+    u8 *stub = stub_pool + stub_used;
+    long long to_stub;
+
+    if (s->patched) return 0;
+    /* The sled is 8 NOPs; the detour goes in the first instruction and the rest
+     * is left as padding.  NOP is 0xD503201F on AArch64, not 0x90. */
+    for (int i = 0; i < 8; i++) {
+        u32 w;
+        memcpy(&w, s->host + 4 * i, 4);
+        if (w == 0xD503201Fu) continue;
+        ps2_log("hook: %08X does not begin with a patch sled -- this exe was "
+                "built without PS2_HOOK_ENTRIES, so entry hooks are refused",
+                s->guest);
+        return -1;
+    }
+    /* The stub must reach the patched entry with a single 26-bit branch, so
+     * allow only the sled's own span and skip the next function. */
+    to_stub = (long long)(stub - s->host);
+    if (!a64_b_reachable((long long)(s->host + 0), (long long)stub)) {
+        ps2_log("hook: %08X is out of a 26-bit branch's reach of the stub area",
+                s->guest);
+        return -1;
+    }
+    if (!write_stub_a64(stub, id, (void *)ps2_hook_thunk)) return -1;
+    FlushInstructionCache(GetCurrentProcess(), stub, STUB_BYTES + 8);
+    if (!VirtualProtect(s->host, 8, PAGE_EXECUTE_READWRITE, &old)) {
+        ps2_log("hook: cannot make %08X writable (%lu)", s->guest,
+                (unsigned long)GetLastError());
+        return -1;
+    }
+    {
+        u32 b = a64_b((long long)s->host, (long long)stub);
+        memcpy(s->host, &b, 4);
+    }
+    VirtualProtect(s->host, 8, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), s->host, 8);
+    stub_used += STUB_BYTES + 8;
+    s->stub = stub;
+    s->patched = 1;
+    return 0;
+}
+#else
 static int write_detour(hook_site *s) {
     DWORD old;
     unsigned id = (unsigned)(s - sites);
@@ -272,10 +405,10 @@ static int write_detour(hook_site *s) {
     s->patched = 1;
     return 0;
 }
-#else
+#endif  /* __aarch64__ */
+#else   /* !HOOK_SUPPORTED */
 static int write_detour(hook_site *s) { (void)s; return -1; }
 #endif
-
 static hook_site *prepare(u32 guest_addr, const char *what, const char *owner) {
     hook_site *s;
     u8 *host;
