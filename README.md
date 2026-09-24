@@ -1,6 +1,13 @@
 # ps2recomp: Ace Combat 5
 
+**简体中文说明见 [`README.zh-CN.md`](README.zh-CN.md)。**
+
 A static recompilation of **Ace Combat 5: The Unsung War** (PS2) for Windows. It builds for both the US release and the Japanese / Chinese one, on x64 and on Windows on ARM.
+
+> This fork adds the Japanese / Chinese region, a Windows-on-ARM build, and the
+> troubleshooting that got the Chinese localisation from a black screen to the main
+> menu. **It was modified by DeepSeek Harness driving the DeepSeek V4.1 Flash
+> model.** Upstream: [sal063/Ace-Combat-5-Static-recompilation](https://github.com/sal063/Ace-Combat-5-Static-recompilation).
 
 The game's main CPU code isn't emulated. A Python tool reads the original executable and translates every function into C ahead of time. GCC then compiles that together with a runtime that stands in for the rest of the console: the GS (drawn through Vulkan), the VU vector units, SPU2 audio, the IPU for the movies, the IOP modules, memory cards and controllers. What you get at the end is a normal `ac5.exe`.
 
