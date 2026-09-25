@@ -519,6 +519,24 @@ You don't need to. Everything in `config/` is already generated and committed, s
 - **The window opens and stays black, but the log looks healthy** (disc loaded, hooks attached, 59.9 fields/s, no errors). Almost always `--data` pointing at a folder that has `ps2_image.bin` from the *other* region: the config and the executable must be the same release. `config/` goes with `generated/` and the US ISO; `config/cnjp/` goes with `generated-cnjp/` and `SLPS_254.18`. Mixing them produces a build that boots and then never leaves its first screen.
 - **The black window is accompanied by `nusndstr: the transfer counter is at ...`** and nothing after it. That message is normal on the Japanese build; it means the runtime found the moved sound counter. If the scene stops advancing while the log shows the counter stuck at 0, the counter address is wrong for your executable — see [the black screen](#the-one-that-actually-caused-the-black-screen).
 
+## Known issues
+
+The Simplified Chinese build has two unsolved problems. The full record — symptoms, what
+has been established, what was already tried, and where to look next — is in
+[**`docs/known-issues.md`**](docs/known-issues.md).
+
+1. **The radio voice language setting has no effect.** It can be set to English and
+   confirmed in the new-game screen, and the mission still plays Japanese voices. PCSX2
+   running the same disc *does* play English, so this is ours rather than a limitation of
+   the translation patch.
+2. **Exclusive fullscreen cannot be entered on this machine.** The driver refuses every
+   display-mode change from this process, down to a plain `1920x1080 @ 60 Hz`, and a mode
+   change is what exclusive fullscreen is. Borderless fullscreen works, and the exclusive
+   path is written and takes effect on a machine whose driver allows the change.
+
+That file also lists the dead ends and the mistakes made while chasing these two, so they
+are not repeated.
+
 ## Legal
 
 Ace Combat is a trademark of Bandai Namco Entertainment. This project isn't affiliated with or endorsed by them in any way. No game files are included, and I won't share any, so please don't ask.
