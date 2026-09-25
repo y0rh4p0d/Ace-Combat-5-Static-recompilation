@@ -529,6 +529,9 @@ int main(int argc, char **argv) {
     int want_video = 1, want_profile = 0, want_selftest = 0, want_vif_test = 0, want_vu_test = 0;
     int want_gs_test = 0, want_spu2_test = 0, want_hle_test = 0;
     int want_autoplay = 0, want_deint = 1;
+    /* --window-mode has to survive ps2_settings_load(), which runs after the arguments
+     * are parsed and would otherwise overwrite it with the saved value. */
+    int cli_window_mode = -1;
     int want_stop_scene[3] = { -1, -1, 90 }, have_stop_scene = 0;
     int want_hidden = 0;
     const char *cap_path = NULL;
@@ -556,6 +559,12 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--disc") && i + 1 < argc) disc = argv[++i];
         else if (!strcmp(argv[i], "--novideo")) want_video = 0;
         else if (!strcmp(argv[i], "--hidden")) want_hidden = 1;
+        else if (!strcmp(argv[i], "--window-mode") && i + 1 < argc) {
+            /* 0 windowed, 1 borderless, 2 exclusive.  Overriding the saved setting is
+             * the only way to test the fullscreen paths without a mouse. */
+            int m = atoi(argv[++i]);
+            cli_window_mode = m < 0 ? 0 : m > 2 ? 2 : m;
+        }
         else if (!strcmp(argv[i], "--selftest")) want_selftest = 1;
         else if (!strcmp(argv[i], "--gs-test")) want_gs_test = 1;
         else if (!strcmp(argv[i], "--spu2-test")) want_spu2_test = 1;
@@ -747,6 +756,17 @@ int main(int argc, char **argv) {
         return bad ? 1 : 0;
     }
     ps2_settings_load();
+
+    /* Applied after the load, not during parsing, so the command line wins over the
+     * saved setting rather than the other way round. */
+    if (cli_window_mode >= 0) {
+        ps2_cfg.window_mode = cli_window_mode;
+        if (ps2_cfg.window_mode != PS2_WIN_WINDOWED)
+            ps2_cfg.fullscreen_type = ps2_cfg.window_mode;
+        ps2_settings_touch(PS2_CFG_WINDOW);
+        ps2_log("cli: window mode %d (window_mode=%d fullscreen_type=%d)",
+                cli_window_mode, ps2_cfg.window_mode, ps2_cfg.fullscreen_type);
+    }
     ps2_video_hidden(want_hidden);
     if (want_video && ps2_video_init("Ace Combat 5 - The Unsung War", 640, 448) != 0) {
         ps2_log("warning: no video output; running headless");

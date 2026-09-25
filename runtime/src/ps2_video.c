@@ -4412,10 +4412,29 @@ static void apply_window_settings(void) {
                      : desk ? desk->refresh_rate : 0.0f;
             ok = w > 0 && h > 0
               && SDL_GetClosestFullscreenDisplayMode(d, w, h, hz, false, &mode);
+            /* Whether this succeeded decides exclusive or a silent fall back to
+             * borderless, and the two are indistinguishable from the outside. */
+            ps2_log("vk: exclusive fullscreen request %dx%d @ %.0f Hz: display %u, "
+                    "desktop %dx%d @ %.0f Hz, closest %s",
+                    w, h, (double)hz, (unsigned)d,
+                    desk ? desk->w : 0, desk ? desk->h : 0,
+                    desk ? (double)desk->refresh_rate : 0.0,
+                    ok ? "found" : "NOT FOUND -- falling back to borderless");
+            if (ok)
+                ps2_log("vk:   closest is %dx%d @ %.0f Hz", mode.w, mode.h,
+                        (double)mode.refresh_rate);
         }
         SDL_SetWindowFullscreenMode(window, ok ? &mode : NULL);
         want_fullscreen = 1;
         SDL_SetWindowFullscreen(window, true);
+        {
+            const SDL_DisplayMode *now = SDL_GetWindowFullscreenMode(window);
+            ps2_log("vk: window mode now %d (%s), fullscreen mode %s, %dx%d",
+                    ps2_cfg.window_mode,
+                    ps2_cfg.window_mode == PS2_WIN_EXCLUSIVE ? "exclusive" : "borderless",
+                    now ? "set" : "none (borderless)",
+                    now ? now->w : 0, now ? now->h : 0);
+        }
     }
     swap_dirty = 1;
 }
@@ -4579,6 +4598,8 @@ static void *renderer_main(void *arg) {
         if (ps2_ui_init(&ui) != 0) ps2_log("ui: settings menu unavailable");
     }
     if (ps2_cfg.window_mode != PS2_WIN_WINDOWED) apply_window_settings();
+    else ps2_log("vk: starting windowed (window_mode=%d, fullscreen_type=%d)",
+                 ps2_cfg.window_mode, ps2_cfg.fullscreen_type);
     {
         int n = 0;
         SDL_JoystickID *ids = SDL_GetGamepads(&n);
