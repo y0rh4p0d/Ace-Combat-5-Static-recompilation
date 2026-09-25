@@ -137,6 +137,14 @@ static const intent_addr intent_addrs[] = {
 static u32 intent_resolved[N_INTENT_ADDRS];
 static int intent_addrs_ready;
 
+/* The sky dome builder's unit-circle table: data, not code, so no intent entry
+ * describes it; see seg_table_addr() below for how its address is derived. */
+#define SEG_TABLE_US 0x003C8370u
+
+/* Defined next to record_sky(), where its reasoning lives, but reported by
+ * intent_resolve() far above it. */
+static u32 seg_table_addr(void);
+
 static int intent_sig_ok(u32 at, const intent_addr *e) {
     /* Exact comparison, deliberately.  These functions are byte-identical in both
      * builds -- the table is generated from the US binary and checked against the
@@ -280,14 +288,15 @@ static void intent_resolve(void) {
             }
         ps2_log("rn-intent: %d region(s) located, shifts:%s (%d site(s) left to "
                 "the emulated path)", regions, buf, bad);
+        ps2_log("rn-intent: sky segment table at %08X (reference %08X)",
+                seg_table_addr(), SEG_TABLE_US);
     }
     intent_addrs_ready = 1;
 }
 
 /* Copy the resolved values into the names the rest of the file uses. */
 static void intent_apply(void) {
-    F_PRIM_WRITER   = intent_addr_of(F_PRIM_WRITER_US);
-    F_RECT_HELPER   = intent_addr_of(F_RECT_HELPER_US);
+    F_PRIM_WRITER   = intent_addr_of(F_PRIM_WRITER_US);    F_RECT_HELPER   = intent_addr_of(F_RECT_HELPER_US);
     F_LINE_HELPER   = intent_addr_of(F_LINE_HELPER_US);
     F_SKY_DOME      = intent_addr_of(F_SKY_DOME_US);
     F_SKY_HAZE      = intent_addr_of(F_SKY_HAZE_US);
@@ -594,6 +603,53 @@ static int tap_group(ps2_ctx *ctx, void *u) {
 static const u32 sky_dome_w[2] = { 0x27BDFF90u, 0xFFB10018u };
 static const u32 sky_haze_w[2] = { 0x3C014580u, 0x27BDFF70u };
 
+/* Where the sky dome builder's unit-circle table lives.
+ *
+ * record_sky() used to read this from a fixed address, which is wrong in the
+ * Japanese build: the table there is 64 floats of sin/cos for 32 equally spaced
+ * angles, and that build puts it 0x380 further on.  At the reference build's
+ * address the Japanese image holds 64 zeros, so the dome was built from 32
+ * zero-length segments, collapsed, and the sky came out black while the HUD --
+ * which does not go through the dome -- still drew.  That is the "only the HUD is
+ * visible" picture.
+ *
+ * The address cannot be derived from the interval deltas: this address is not inside
+ * a mapped interval at all, and the shift of its enclosing region lands eight bytes
+ * short of the table.  It is found by its contents instead, which is exact and needs
+ * no per-build constant.  The first four floats are the table's signature -- sin/cos
+ * at 0 and at pi/16 -- and their bit patterns are compared, so there is nothing to
+ * tune and no tolerance to get wrong.
+ */
+static int seg_table_ok(u32 a) {
+    /* 0.0f, 1.0f, sin(pi/16), cos(pi/16) -- copied from the reference image, not
+     * recomputed, so that this cannot drift from what the build actually stores. */
+    static const u32 want[4] = { 0x00000000u, 0x3F800000u,
+                                 0x3E47C5C1u, 0x3F7B14BEu };
+    if (a < 0x00100000u || (a & 3u)) return 0;
+    for (int i = 0; i < 4; i++)
+        if (ps2_r32(a + 4u * (u32)i) != want[i]) return 0;
+    return 1;
+}
+
+static u32 seg_table_addr(void) {
+    static u32 cached;
+    if (cached) return cached;
+    if (seg_table_ok(SEG_TABLE_US)) return cached = SEG_TABLE_US;
+    /* It sits 256 bytes past the reference address in the build that moves it, so
+     * search upwards first, a word at a time. */
+    for (u32 step = 4u; step <= 0x2000u; step += 4u) {
+        u32 a = (SEG_TABLE_US + step) & 0x1FFFFFFFu;
+        if (seg_table_ok(a)) return cached = a;
+    }
+    for (u32 off = 4u; off <= 0x800u; off += 4u) {
+        u32 a = (SEG_TABLE_US - off) & 0x1FFFFFFFu;
+        if (seg_table_ok(a)) return cached = a;
+    }
+    ps2_log("rn-intent: the sky segment table is not near %08X; the dome will be "
+            "built from whatever is there", SEG_TABLE_US);
+    return SEG_TABLE_US;
+}
+
 static void record_sky(u32 dome, u32 pkt, u32 end, u32 site, rn_int_skydome *body) {
     rn_intent_hdr h;
     rn_sky_ring ring;
@@ -605,7 +661,7 @@ static void record_sky(u32 dome, u32 pkt, u32 end, u32 site, rn_int_skydome *bod
     hdr_init(&h, RN_INT_SKYDOME, need, site, pkt);
     ps2_get_mem(body->screen, dome, sizeof body->screen);
     ps2_get_mem(body->clip, dome + 64u, sizeof body->clip);
-    ps2_get_mem(body->seg, 0x003C8370u, sizeof body->seg);
+    ps2_get_mem(body->seg, seg_table_addr(), sizeof body->seg);
     body->rings = rings;
     body->segs = 32u;
     memcpy(out, &h, sizeof h);
