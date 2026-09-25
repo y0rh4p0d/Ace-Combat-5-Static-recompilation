@@ -85,6 +85,9 @@ void rn_vp_init(void);
 int  rn_vp_run(struct ps2_vu *vu, u32 start);
 void rn_vp_kick(struct ps2_vu *vu, u32 addr);
 void rn_vp_report(void);
+/* Print where each native VU1 program was located, once.  Reading the wrong address
+ * for them is silent otherwise: no program matches and nothing is logged. */
+void rn_vp_locate_report(void);
 int  rn_vp_upload(struct ps2_vu *vu, u32 start);
 void rn_vp_verify_stats(int prog, u64 out[7]);
 struct ps2_vu *ps2_vu1_test_vu(void);

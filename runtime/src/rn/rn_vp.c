@@ -105,20 +105,72 @@ static u64 unrecognised_runs;
 
 static int resident = -1;
 
+/* Where this build keeps the program, which is not where the table says.
+ *
+ * The table's addresses are in the reference build's .vutext, and the other build
+ * relocates that whole section: in the Japanese executable every one of these programs
+ * sits 0x340 further on.  Reading the reference address there returns unrelated bytes,
+ * the parse below finds no upload command, the program reports zero instruction pairs,
+ * and prog_matches() then rejects every upload -- so no native VU1 geometry runs at all
+ * and the picture is drawn entirely by the emulated path.
+ *
+ * The shift is not assumed.  A VU1 microprogram begins with a 0x60 opcode word, which
+ * is what the reference build holds at these addresses and what the relocated
+ * Japanese one holds too, while the bytes at the unrelocated address do not.  So the
+ * address is chosen by checking its contents, and falls back to the table's own value
+ * for a build that did not move. */
+static int vp_start_ok(u32 a) {
+    return ps2_ram && a > 0x00100000u && (ps2_r32(a) >> 24) == 0x60u;
+}
+
+static u32 vp_start(const vp_prog *p) {
+    static u32 shift;
+    static int tried;
+    if (!tried) {
+        tried = 1;
+        if (vp_start_ok(p->start)) {
+            shift = 0;
+        } else {
+            for (u32 s = 4u; s <= 0x1000u; s += 4u)
+                if (vp_start_ok(p->start + s)) { shift = s; break; }
+            if (!shift) {
+                ps2_log("rn: no VU1 program found near %08X (checked +0x1000); "
+                        "native VU1 stays off", p->start);
+            } else {
+                ps2_log("rn: VU1 programs are %+#x from the reference addresses",
+                        (int)shift);
+            }
+        }
+    }
+    return p->start + shift;
+}
+
+/* Report where each program was found, once, at start-up.  Without this the only
+ * symptom of reading the wrong address is that no VU1 program ever matches, which
+ * shows up as the picture simply being drawn the slow way, with nothing logged. */
+void rn_vp_locate_report(void) {
+    for (u32 i = 0; i < N_PROGS; i++)
+        ps2_log("rn: VU1 %-14s reference %08X -> %08X%s",
+                progs[i].name, progs[i].start, vp_start(&progs[i]),
+                vp_start_ok(vp_start(&progs[i])) ? "" : "  (no program there)");
+}
+
 int rn_vp_resident_slot(void) { return resident; }
 const char *rn_vp_prog_name(int slot) {
     return slot >= 0 && (u32)slot < N_PROGS ? progs[slot].name : "unrecognised";
 }
 
 static void parse_prog(vp_prog *p) {
-    u32 pos, n = 0, cap = 4096;
+    u32 pos, n = 0, cap = 4096, start, end;
     p->parsed = 1;
     if (!ps2_ram) return;
+    start = vp_start(p);
+    end = p->end + (start - p->start);
     p->pcs = (u16 *)malloc(cap * sizeof *p->pcs);
     p->words = (u32 *)malloc(cap * 2 * sizeof *p->words);
     if (!p->pcs || !p->words) return;
-    pos = p->start + 8u;
-    while (pos + 4u <= p->end) {
+    pos = start + 8u;
+    while (pos + 4u <= end) {
         u32 code = ps2_r32(pos), cmd = (code >> 24) & 0x7Fu;
         pos += 4u;
         if (cmd == 0x4Au) {
