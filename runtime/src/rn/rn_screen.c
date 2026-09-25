@@ -61,9 +61,16 @@ static int is_screen_emitter(u32 e) {
             site_of[e] = (u8)(N_SITES + 1u);
         } else if (e >= RN_EMIT_FIRST) {
             const rn_emitter *em = rn_emitter_get(e);
+            /* sites[] is written in reference addresses, but em->site is an address in
+             * whichever executable is loaded.  Comparing them directly means every test
+             * below is false on a build that moved -- and a false range test reports
+             * nothing, so the screen passes (sky, sun, clouds, self-shadow, the effect
+             * system) would all quietly fall through to the emulated path.  Translate
+             * the site back to a reference address first. */
+            const u32 site = em ? rn_us_addr(em->site) : 0u;
             for (u32 i = 0; em && i < N_SITES; i++)
-                if (em->site >= sites[i].lo && em->site < sites[i].hi
-                    && !skipped(em->site) && !skipped(sites[i].lo)) {
+                if (site >= sites[i].lo && site < sites[i].hi
+                    && !skipped(site) && !skipped(sites[i].lo)) {
                     decided[e] = 1;
                     site_of[e] = (u8)(i + 1u);
                     break;
@@ -257,6 +264,16 @@ void rn_screen_init(void) {
 }
 
 void rn_screen_report(void) {
+    /* How many emitters were recognised as screen passes at all.  Worth saying even
+     * when nothing was drawn: on a build that moved, a comparison against the
+     * reference addresses in sites[] fails for every emitter, and the only symptom is
+     * this being zero -- the primitives simply take the emulated path instead. */
+    {
+        u32 n = 0;
+        for (u32 i = 0; i < RN_EMIT_MAX; i++)
+            if (decided[i] == 1) n++;
+        ps2_log("rn: screen layer -- %u emitters recognised as screen passes", n);
+    }
     if (!st_scr.prims) return;
     if (st_scr.other)
         ps2_log("rn:    screen pass %-28s %llu primitives", "front end, not 2D",
