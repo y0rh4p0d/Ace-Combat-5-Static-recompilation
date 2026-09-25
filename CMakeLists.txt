@@ -72,6 +72,9 @@ set(RUNTIME_SOURCES
     runtime/src/ps2_ui.cpp
     runtime/src/rn/rn_census.c
     runtime/src/rn/rn_2d.c
+    # The reverse address map's lookup.  The table it reads is per-build data and is
+    # added below, next to the other generated sources.
+    runtime/src/rn/rn_revmap.c
     runtime/src/rn/rn_dump.c
     runtime/src/rn/rn_vp.c
     runtime/src/rn/rn_vp_model.c
@@ -94,6 +97,21 @@ set(RUNTIME_SOURCES
     runtime/src/rn/rn_tap.c
     runtime/src/ps2_main.c)
 
+# The reverse address map's table.  It is per-build data, like the image: it says where
+# this executable's addresses came from in the reference one, so it is generated next to
+# them rather than checked in.  When the generator has not run, the empty stub is
+# compiled instead -- an empty map makes every lookup return its input, which is the
+# right answer for a build that did not move.
+#
+# This must come after RUNTIME_SOURCES is set above, or the append creates an unrelated
+# variable and the stub is never compiled; that surfaces as an undefined reference to
+# rn_revmap at link time rather than as anything about the map.
+if(EXISTS "${GEN_DIR}/rn_revmap_data.c")
+  list(APPEND GENERATED_SOURCES "${GEN_DIR}/rn_revmap_data.c")
+else()
+  list(APPEND RUNTIME_SOURCES runtime/src/rn/rn_revmap_empty.c)
+endif()
+
 set(LUA_DIR "${CMAKE_SOURCE_DIR}/third_party/lua")
 file(GLOB LUA_SOURCES CONFIGURE_DEPENDS "${LUA_DIR}/*.c")
 add_library(lua54 STATIC ${LUA_SOURCES})
@@ -114,6 +132,8 @@ list(APPEND RUNTIME_SOURCES ${IMGUI_SOURCES})
 
 add_executable(ac5 ${RUNTIME_SOURCES} ${GENERATED_SOURCES})
 target_include_directories(ac5 PRIVATE runtime/include "${GEN_DIR}"
+                                       # the generated reverse map includes rn_revmap.h
+                                       runtime/src/rn
                                        ${IMGUI_DIR} ${IMGUI_DIR}/backends
                                        ${SDL3_INCLUDE_DIRS} ${Vulkan_INCLUDE_DIRS})
 target_link_directories(ac5 PRIVATE ${SDL3_LIBRARY_DIRS})
@@ -205,10 +225,19 @@ list(REMOVE_ITEM REPLAY_SOURCES runtime/src/ps2_main.c
                                 runtime/src/ps2_params.c
                                 runtime/src/rn/rn_intent.c
                                 runtime/src/rn/rn_fixes.c
-                                runtime/src/rn/rn_tap.c)
+                                runtime/src/rn/rn_tap.c
+                                # The reverse map's table is ~250 KB for a lookup the
+                                # replay tool never makes: it has no loaded build to
+                                # translate from.  rn_revmap.c stays in (rn_2d.c links
+                                # it), and the empty stub below stands in for the data.
+                                runtime/src/rn/rn_revmap_data.c
+                                runtime/src/rn/rn_revmap_empty.c)
 list(APPEND REPLAY_SOURCES runtime/src/ps2_replay.c)
 
 add_executable(gsreplay ${REPLAY_SOURCES})
+# rn_revmap.c reads this table, and the replay tool never has the generated one, so it
+# always gets the empty stub: it has no loaded build to translate from.
+target_sources(gsreplay PRIVATE runtime/src/rn/rn_revmap_empty.c)
 target_include_directories(gsreplay PRIVATE runtime/include "${GEN_DIR}"
                                             "${LUA_DIR}"
                                             ${IMGUI_DIR} ${IMGUI_DIR}/backends

@@ -185,8 +185,13 @@ static int frontend_emitter(u32 e) {
     if (!fe_decided[e]) {
         const rn_emitter *em = rn_emitter_get(e);
         fe_decided[e] = 2;
+        /* fe_ranges is written in US addresses.  On a build that moved, the site this
+         * is compared against is that build's address, so every test below would be
+         * false and no emitter would ever be recognised as frontend -- silently, since
+         * a failed range test says nothing.  Normalise the site first. */
+        u32 site = em ? rn_us_addr(em->site) : 0;
         for (u32 i = 0; em && i < sizeof fe_ranges / sizeof fe_ranges[0]; i++)
-            if (em->site >= fe_ranges[i].lo && em->site < fe_ranges[i].hi) {
+            if (site >= fe_ranges[i].lo && site < fe_ranges[i].hi) {
                 fe_decided[e] = 1;
                 break;
             }

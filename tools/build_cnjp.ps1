@@ -89,6 +89,26 @@ try {
         Write-Host "-- reusing $genDir (pass -Recompile to redo it)"
     }
 
+    # --- 2b. reverse address map -------------------------------------------
+    # Generated from the port's map, so it describes this executable rather than the
+    # reference one.  Without it the runtime cannot turn one of this build's addresses
+    # back into a reference address, and the tables still written in reference
+    # addresses -- the frontend emitter ranges, for instance -- silently stop matching.
+    # The US build is the reference build, where nothing moves, so it needs no table
+    # and CMake compiles an empty one.
+    if ($Region -ne 'us') {
+        $mapJson = Join-Path $cfgDir 'addr_map.json'
+        if (Test-Path $mapJson) {
+            Write-Host "-- generating the reverse address map"
+            & python "$PSScriptRoot\gen_revmap.py" --map $mapJson `
+                     --out (Join-Path $genDir 'rn_revmap_data.c')
+            if ($LASTEXITCODE -ne 0) { throw 'reverse address map generation failed' }
+        } else {
+            Write-Host "-- WARNING: $mapJson is missing; the build gets an empty" -ForegroundColor Yellow
+            Write-Host "   reverse map, so reference-address tables will not match." -ForegroundColor Yellow
+        }
+    }
+
     if ($NoBuild) { return }
 
     # --- 3. build ----------------------------------------------------------

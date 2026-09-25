@@ -330,6 +330,12 @@ static u32 intent_site(u32 resolved) {
     return us ? us : resolved;
 }
 
+/* Public form of the above.  The intent table knows a few addresses the compiled-in
+ * address map does not describe, so rn_us_addr() asks this before falling back to it. */
+u32 rn_intent_us_addr(u32 resolved) {
+    return intent_site(resolved);
+}
+
 #define PEND_MAX 8192u
 #define ARENA_BYTES (4u << 20)
 typedef struct {

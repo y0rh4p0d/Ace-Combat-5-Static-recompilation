@@ -25,6 +25,20 @@ u32  rn_tap_open_emitter(u32 pkt);
 /* Translate a US-release guest address to the loaded executable's equivalent.
  * rn_init() resolves the table this reads; before that it returns its input. */
 u32  rn_resolve_addr(u32 us_addr);
+/* The other direction: an address in the loaded executable back to its reference
+ * equivalent, from the port's whole address map (rn_revmap.c).
+ *
+ * Tables still written in reference addresses have to compare against this rather than
+ * against the address the running build produced.  On a build that moved, comparing raw
+ * addresses makes every range test false, and a false range test logs nothing -- the
+ * affected emitters simply stop being recognised.
+ *
+ * Returns its input when the map does not cover the address, which is also the right
+ * answer on a build where nothing moved. */
+u32  rn_us_addr(u32 a);
+/* The same, straight from the intent table, for callers that run before the taps are
+ * resolved. */
+u32  rn_intent_us_addr(u32 a);
 void rn_intent_frame_end(void);
 void rn_intent_tag(u32 tadr, u32 emitter);
 

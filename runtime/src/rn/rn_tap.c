@@ -3,6 +3,7 @@
 #include "ps2_gfxq.h"
 #include "ps2_capture.h"
 #include "rn_int.h"
+#include "rn_revmap.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -120,6 +121,34 @@ u32 rn_resolve_addr(u32 us) {
     if (!tap_resolved) return us;
     a = tap_of(us);
     return a ? a : us;
+}
+
+/* The reverse of the above, for the tables still written in US addresses.
+ *
+ * Those hold function ranges -- the frontend emitter block in rn_2d.c, for instance --
+ * and are tested against an address taken from the running build.  On a build that
+ * moved every such test is false, and a false range test is silent: the emitters stop
+ * being recognised with nothing logged.
+ *
+ * The port's whole address map is compiled in (rn_revmap.c) and answers for the text
+ * section; the taps and the intent table cover a few addresses outside it.  Asking
+ * all three, cheapest first, gets the widest coverage without duplicating any. */
+u32 rn_us_addr(u32 a) {
+    size_t i;
+    if (!a) return a;
+    if (a < 0x00100000u || a > 0x02000000u) return a;
+    if (tap_resolved) {
+        for (i = 0; i < N_SIGS; i++) {
+            const u32 us = tap_sigs[i].us_addr;
+            if (us == a) return a;                  /* already a US address */
+            if (tap_addr[i] && tap_addr[i] == a) return us;
+        }
+    }
+    {
+        const u32 t = rn_intent_us_addr(a);
+        if (t != a) return t;
+    }
+    return rn_revmap_to_us(a);
 }
 
 static int sig_matches(u32 at, const tap_sig *s) {

@@ -617,6 +617,12 @@ void ps2_capture_report(const char *why) { (void)why; }
 int rn_taps_on;
 void rn_dma_attrib_slow(int ch, u32 tadr) { (void)ch; (void)tadr; }
 int rn_intents_pending;
+/* The replay tool links rn_2d.c but neither rn_tap.c nor rn_intent.c.  rn_2d.c asks for
+ * the reverse address translation so its US-written tables still match on a build that
+ * moved; with neither table present there is nothing to translate, and identity is the
+ * right answer since this tool has no loaded build of its own. */
+u32 rn_us_addr(u32 a) { return a; }
+u32 rn_intent_us_addr(u32 a) { return a; }
 void rn_dma_transfer_slow(int ch, u32 madr, u32 qwc, int after) {
     (void)ch; (void)madr; (void)qwc; (void)after;
 }
