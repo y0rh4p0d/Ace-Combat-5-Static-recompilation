@@ -75,9 +75,6 @@ static int lang_probe(ps2_ctx *ctx, void *u) {
     /* The values that matter are the ones at the moment of the decision, not at
      * start-up: the game writes this storage before it chooses a track, and reading it
      * early shows zeros that say nothing. */
-    ps2_log("lang: call %u  DECISION  0x000AC09C = %08X  bit20=%u  0x000AC13D = %u",
-            lang_calls, ps2_r32(0x000AC09Cu), (ps2_r32(0x000AC09Cu) >> 20) & 1u,
-            ps2_r8(0x000AC13Du));
     slot = (u32)((s32)ctx->r[29].ud[0] + LANG_CFG_FROM_ENTRY_SP);
     cfg = ps2_r32(slot);
     /* Report the raw slot too: if the offset is wrong this is what shows it, and a
@@ -105,25 +102,32 @@ static int lang_probe(ps2_ctx *ctx, void *u) {
  * Reported unconditionally for the first few calls, so that a wrong offset shows up as
  * an implausible number instead of as silence. */
 static int qual_probe(ps2_ctx *ctx, void *u) {
-    u32 cfg, slot, v;
     static unsigned n;
     (void)u;
     n++;
     if (n > 24u) return 0;
-    /* The base is not absolute: the code is lui v3, 0x000A0000 / addu v3, v3, s4 /
-     * lw v3, 0xC09C(v3), so the storage is 0x000A0000 + s4 + 0xC09C.  Missing the addu
-     * made an earlier version read 0x000AC09C, which is a different place entirely and
-     * read zero in both language settings. */
+    /* This function's prologue establishes the config base and reads the language byte
+     * from it:
+     *
+     *     lui  v2, 0x000A
+     *     addu v2, v2, s4          ; s4 holds the config base
+     *     lbu  v2, -0x3EC3(v2)     ; 0x000A0000 + s4 - 0x3EC3 = the language byte
+     *
+     * so both the language byte and the quality word are offsets from 0x000A0000 + s4.
+     * Reading them here is the same arithmetic the game uses, at the only point where the
+     * values mean anything, and it removes the guesswork that made earlier probes report
+     * bits the game never looked at. */
     {
-        s32 base = (s32)ctx->r[20].ud[0];
-        u32 abs = (u32)(0x000A0000 + base + 0xC09C);
-        u32 v = ps2_r32(abs);
-        ps2_log("qual: call %u  s4 %08X  abs %08X = %08X  bit20=%u -> %s",
-                n, ctx->r[20].ud[0], abs, v, (v >> 20) & 1u,
-                (v & 0x00100000u) ? "RADIOJJ.PAC" : "RADIOJE.PAC");
+        u32 base = (u32)(0x000A0000 + (s32)ctx->r[20].ud[0]);
+        u32 lang = base - 0x3EC3u;
+        u32 qual = base + 0xC09Cu;
+        u32 qv = ps2_r32(qual);
+        ps2_log("qual: call %u  s4 %08X  base %08X  language byte %08X = %u  "
+                "quality %08X = %08X bit20=%u -> %s",
+                n, ctx->r[20].ud[0], base, lang, ps2_r8(lang), qual, qv,
+                (qv >> 20) & 1u,
+                (qv & 0x00100000u) ? "RADIOJJ.PAC" : "RADIOJE.PAC");
     }
-    slot = (u32)((s32)ctx->r[29].ud[0] + LANG_CFG_FROM_ENTRY_SP);
-    (void)slot;
     return 0;
 }
 
