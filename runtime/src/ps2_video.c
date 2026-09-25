@@ -4426,14 +4426,58 @@ static void apply_window_settings(void) {
         }
         SDL_SetWindowFullscreenMode(window, ok ? &mode : NULL);
         want_fullscreen = 1;
-        SDL_SetWindowFullscreen(window, true);
         {
-            const SDL_DisplayMode *now = SDL_GetWindowFullscreenMode(window);
-            ps2_log("vk: window mode now %d (%s), fullscreen mode %s, %dx%d",
-                    ps2_cfg.window_mode,
-                    ps2_cfg.window_mode == PS2_WIN_EXCLUSIVE ? "exclusive" : "borderless",
-                    now ? "set" : "none (borderless)",
-                    now ? now->w : 0, now ? now->h : 0);
+            /* The return value matters, and was being discarded: a refused exclusive mode
+             * leaves the window exactly as it was -- border, title bar, its old size --
+             * so a failure looked identical to a mode that simply had not been asked for
+             * yet.  Windows refuses when the requested mode is not one the driver will
+             * switch to, which is what ChangeDisplaySettingsEx() reports. */
+            bool fs = SDL_SetWindowFullscreen(window, true);
+            if (!fs && ps2_cfg.window_mode == PS2_WIN_EXCLUSIVE) {
+                /* Second attempt: exclusive at exactly the mode the display is already
+                 * in.  That asks the driver for no mode change at all, which some drivers
+                 * accept where an arbitrary one is refused, and it still gives a real
+                 * exclusive swapchain. */
+                SDL_DisplayID d2 = SDL_GetDisplayForWindow(window);
+                const SDL_DisplayMode *desk2 = d2 ? SDL_GetDesktopDisplayMode(d2) : NULL;
+                if (desk2) {
+                    SDL_DisplayMode exact = *desk2;
+                    SDL_SetWindowFullscreenMode(window, &exact);
+                    ps2_log("vk: exclusive refused; trying it at the current mode "
+                            "%dx%d @ %.0f Hz", exact.w, exact.h, (double)exact.refresh_rate);
+                    fs = SDL_SetWindowFullscreen(window, true);
+                }
+            }
+            if (!fs && ps2_cfg.window_mode == PS2_WIN_EXCLUSIVE) {
+                /* Retry as borderless, which needs no display-mode change and so cannot
+                 * be refused the same way.  Fullscreen without exclusive is worth far
+                 * more than a window the user cannot leave fullscreen. */
+                ps2_log("vk: exclusive fullscreen refused (%s); retrying borderless",
+                        SDL_GetError());
+                SDL_SetWindowFullscreenMode(window, NULL);
+                fs = SDL_SetWindowFullscreen(window, true);
+                if (fs) {
+                    ps2_cfg.window_mode = PS2_WIN_BORDERLESS;
+                    ps2_cfg.fullscreen_type = PS2_WIN_BORDERLESS;
+                }
+            }
+            if (!fs) {
+                /* Both refused: stay consistent with the window we actually have, or the
+                 * toggle would think it is already fullscreen and never try again. */
+                ps2_log("vk: could not enter fullscreen: %s", SDL_GetError());
+                want_fullscreen = 0;
+                ps2_cfg.window_mode = PS2_WIN_WINDOWED;
+            } else {
+                int ww = 0, wh = 0, fw = 0, fh = 0;
+                SDL_GetWindowSize(window, &ww, &wh);
+                SDL_GetWindowSizeInPixels(window, &fw, &fh);
+                ps2_log("vk: fullscreen ok -- mode %s, window %dx%d, pixels %dx%d, flags %s%s",
+                        ps2_cfg.window_mode == PS2_WIN_EXCLUSIVE ? "exclusive" : "borderless",
+                        ww, wh, fw, fh,
+                        (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) ? "FULLSCREEN " : "",
+                        (SDL_GetWindowFlags(window) & SDL_WINDOW_BORDERLESS) ? "BORDERLESS" : "");
+            }
+            ps2_settings_touch(PS2_CFG_SAVE);
         }
     }
     swap_dirty = 1;
