@@ -117,6 +117,35 @@ static int qual_probe(ps2_ctx *ctx, void *u) {
     return 0;
 }
 
+/* The routine every radio-selection site calls, with the chosen filename in a1.  Hooking
+ * it shows the decision that was actually used, rather than the one a particular site
+ * would have made -- which is the difference that mattered here: the language byte read
+ * 0 (English) at 0x00157EE0 while RADIOJJ.PAC was what got loaded, so the file was picked
+ * somewhere else. */
+#define LANG_LOADER_JP 0x0038171Cu
+
+static int loader_probe(ps2_ctx *ctx, void *u) {
+    u32 p = ctx->r[5].ud[0];          /* a1 */
+    static unsigned n;
+    char s[40];
+    int i;
+    (void)u;
+    n++;
+    if (n > 20u) return 0;
+    if (p < 0x00100000u || p >= 0x02000000u) {
+        ps2_log("load: call %u  a1 = %08X (not a pointer)", n, p);
+        return 0;
+    }
+    for (i = 0; i < 39; i++) {
+        u8 c = ps2_r8(p + (u32)i);
+        if (!c) break;
+        s[i] = (c >= 0x20 && c < 0x7F) ? (char)c : '.';
+    }
+    s[i] = 0;
+    ps2_log("load: call %u  a1 = %08X  \"%s\"", n, p, s);
+    return 0;
+}
+
 void rn_lang_probe_init(void) {
     const char *e = getenv("PS2_LANG_PROBE");
     u32 site, func;
@@ -141,5 +170,10 @@ void rn_lang_probe_init(void) {
         if (qual != func && ps2_hook_before(qual, qual_probe, NULL, 200,
                                            "lang-probe") < 0)
             ps2_log("lang: could not hook %08X", qual);
+    }
+    {
+        u32 load = rn_resolve_addr(LANG_LOADER_JP);
+        if (ps2_hook_before(load, loader_probe, NULL, 200, "lang-probe") < 0)
+            ps2_log("lang: could not hook the loader at %08X", load);
     }
 }
