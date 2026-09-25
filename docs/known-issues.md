@@ -1,13 +1,13 @@
 # Known issues and investigation notes
 
 > **Work on this is paused.** The CN/JP build is playable and the picture is correct; the
-> two problems below are open and nothing is in progress on them. Everything needed to
+> four problems below are open and nothing is in progress on them. Everything needed to
 > resume — the facts established, the instrumentation that is still wired in, how to run
 > each test, and the mistakes already made — is in this file.
 
 State at the time this was written: the CN/JP (Simplified Chinese) build runs, the
 picture is correct, the menus and radio captions render in Chinese, and the game is
-playable. Two problems remain unsolved. This file records them along with everything
+playable. Four problems remain unsolved. This file records them along with everything
 that was already tried, so the next session does not repeat it.
 
 The reference build (US, `SLUS_208.51`) is unaffected by all of this.
@@ -94,6 +94,12 @@ the loaded filename against the English run above.
 | `language byte` stays 0 | this is not the language field | the menu's write sites, found by watching `0x000A0000 + s4 - 0x3EC3` |
 | `load: call 3` becomes `RADIOJE` | the option does switch files | re-check which file actually holds English audio; the names are not a reliable guide |
 
+**Note.** The language options are the three values JP/NO SUB, EN/NO SUB and
+EN/SUB(EN) — Japanese with no subtitles, English with no subtitles, and English with
+English subtitles. Simplified Chinese subtitles are what the patch substitutes for the
+subtitle track, so they stay Chinese whichever value is chosen; that part is expected.
+What is not expected is the audio staying Japanese when an English value is selected.
+
 **How to run the comparison**
 
 ```powershell
@@ -169,6 +175,67 @@ If the mode change starts being accepted, the log line becomes
 `exclusive fullscreen via a display mode change`.
 
 ---
+
+## 3. Options menu: the description does not match the highlighted item
+
+**Symptom.** In `OPTIONS` the description line under the highlighted row belongs to a
+different row, and which row it belongs to changes as the cursor moves.
+
+**Where the menu actually is.** Worth stating plainly, because an earlier investigation
+looked in the wrong place: the language setting lives at `OPTIONS → LANGUAGE SETTINGS`,
+**not** in the new-game setup screen. That mistake is why the `PS2_LANG_PROBE` hooks
+reported nothing conclusive about problem 1 — they were written against the wrong entry
+point.
+
+**The menu data, read out of the Japanese executable**
+
+Rows are `{label pointer, id}` pairs, eight bytes each. The ids are stepped rather than
+contiguous, and one pair is out of order:
+
+```
+0040CAA0  id 213  "GAME SETTINGS"
+0040CAA8  id 216  "SOUND SETTINGS"
+0040CAB0  id 215  "DISPLAY SETTINGS"      <- lower id than the entry above it
+0040CAB8  id 217  "LANGUAGE SETTINGS"
+```
+
+The language *values* are out of order in the same way:
+
+```
+0040C5A8  id 132 (0x84)  "JP/NO SUB"
+0040C5B0  id 131 (0x83)  "EN/NO SUB"      <- lower again
+0040C5B8  id 133 (0x85)  "EN/SUB(EN)"
+```
+
+The three values are Japanese with no subtitles, English with no subtitles, and English
+with English subtitles. Simplified Chinese subtitles are what the patch substitutes for
+the subtitle track, which is why they stay Chinese whichever value is chosen.
+
+**What is established**
+
+- PCSX2 on the same disc shows the correct description, so this is ours.
+- The description text is **not** a string table in the executable. Each label pointer is
+  referenced from exactly one place (checked), and no run of ids matching the Options rows
+  exists in any section. The descriptions are loaded data, so the executable alone does not
+  show them.
+- The bug is therefore in how the game indexes that loaded data. The next step is a
+  runtime one: find the index the menu uses for the description and log it next to the
+  highlight index as the row is drawn. That draw goes through the emulated GS (it is
+  outside the native renderer's range), so the hook belongs in the frontend path, with
+  `tools/capture.ps1` for the visual side.
+
+## 4. Options menu: the vibration state reads "on" when it is off
+
+**Symptom.** With VIBRATION highlighted the description says `（当前设定为开启）` while the
+setting is off.
+
+**What is established.** That text is the game's own state string read back from the saved
+setting, not a translation artifact — the pair `ON` (id 145) / `OFF` (id 146) exists in the
+option-value table. So an off setting is read as on, which is the same shape as the other
+state bugs in this build: a value that is stored but read back from the wrong place.
+
+This is separate from the description mismatch above and may have a different cause; they
+happened to be visible on the same screen.
 
 ## Instrumentation that already exists
 
