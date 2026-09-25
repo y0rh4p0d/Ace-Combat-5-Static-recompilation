@@ -162,6 +162,18 @@ void rn_lang_probe_init(void) {
                     "probe disabled", site);
             return;
         }
+
+    /* The decision that actually ran reads an absolute address: the code is
+     * lui v1, 0x000A / lw v1, 0xC09C(v1), which is 0x000AC09C.  Reading it here costs
+     * nothing and says whether it is the same storage the language byte lives in. */
+    {
+        u32 abs_cfg = 0x000AC09Cu;
+        u32 v = ps2_r32(abs_cfg);
+        ps2_log("lang: 0x000AC09C = %08X  bit20=%u  -> %s", v, (v >> 20) & 1u,
+                (v & 0x00100000u) ? "RADIOJJ.PAC" : "RADIOJE.PAC");
+        ps2_log("lang: 0x000AC13D = %u (language byte, 1 means Japanese)",
+                ps2_r8(0x000AC13Du));
+    }
     func = rn_resolve_addr(LANG_FUNC_JP);
     if (ps2_hook_before(func, lang_probe, NULL, 200, "lang-probe") < 0)
         ps2_log("lang: could not hook %08X", func);
