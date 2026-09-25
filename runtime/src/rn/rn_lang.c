@@ -109,7 +109,7 @@ static int qual_probe(ps2_ctx *ctx, void *u) {
     static unsigned n;
     (void)u;
     n++;
-    if (n > 4u) return 0;
+    if (n > 24u) return 0;
     /* The base is not absolute: the code is lui v3, 0x000A0000 / addu v3, v3, s4 /
      * lw v3, 0xC09C(v3), so the storage is 0x000A0000 + s4 + 0xC09C.  Missing the addu
      * made an earlier version read 0x000AC09C, which is a different place entirely and
@@ -141,7 +141,7 @@ static int loader_probe(ps2_ctx *ctx, void *u) {
     int i;
     (void)u;
     n++;
-    if (n > 20u) return 0;
+    if (n > 60u) return 0;
     if (p < 0x00100000u || p >= 0x02000000u) {
         ps2_log("load: call %u  a1 = %08X (not a pointer)", n, p);
         return 0;
