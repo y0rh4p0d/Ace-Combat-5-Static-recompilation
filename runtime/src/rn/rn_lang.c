@@ -72,6 +72,12 @@ static int lang_probe(ps2_ctx *ctx, void *u) {
     (void)u;
 
     lang_calls++;
+    /* The values that matter are the ones at the moment of the decision, not at
+     * start-up: the game writes this storage before it chooses a track, and reading it
+     * early shows zeros that say nothing. */
+    ps2_log("lang: call %u  DECISION  0x000AC09C = %08X  bit20=%u  0x000AC13D = %u",
+            lang_calls, ps2_r32(0x000AC09Cu), (ps2_r32(0x000AC09Cu) >> 20) & 1u,
+            ps2_r8(0x000AC13Du));
     slot = (u32)((s32)ctx->r[29].ud[0] + LANG_CFG_FROM_ENTRY_SP);
     cfg = ps2_r32(slot);
     /* Report the raw slot too: if the offset is wrong this is what shows it, and a
@@ -104,6 +110,11 @@ static int qual_probe(ps2_ctx *ctx, void *u) {
     (void)u;
     n++;
     if (n > 4u) return 0;
+    /* This is the function that actually chose the file in the run under investigation,
+     * so the absolute storage is read here rather than only at start-up. */
+    ps2_log("qual: call %u  0x000AC09C = %08X  bit20=%u  0x000AC13D = %u",
+            n, ps2_r32(0x000AC09Cu), (ps2_r32(0x000AC09Cu) >> 20) & 1u,
+            ps2_r8(0x000AC13Du));
     slot = (u32)((s32)ctx->r[29].ud[0] + LANG_CFG_FROM_ENTRY_SP);
     cfg = ps2_r32(slot);
     if (!cfg || cfg >= 0x02000000u) {
