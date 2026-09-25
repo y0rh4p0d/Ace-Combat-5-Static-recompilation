@@ -30,8 +30,20 @@
 
 #define LANG_SITE_JP   0x00157EE0u   /* lw t2, 0x150(sp) in the Japanese executable */
 #define LANG_FUNC_JP   0x00156D78u   /* the function containing it */
+/* The other decision, which picks between the two radio files by a quality flag rather
+ * than by language.  Both are worth watching, because which one runs depends on how the
+ * track was requested, and the log cannot tell them apart from the file name alone. */
+#define QUAL_SITE_JP   0x0015A8FCu   /* lw v1, 0xC09C(cfg) */
+#define QUAL_FUNC_JP   0x00158FB0u   /* the function containing it (same frame) */
+#define LANG_FRAME     0x1D0u        /* what that function's prologue subtracts */
 #define LANG_CFG_OFF   0x150u        /* the stack slot holding the config object */
 #define LANG_FIELD     0xC13Du       /* the language byte within it */
+
+/* A "before" hook runs before the function's own prologue, so the frame the game will
+ * use does not exist yet: sp still holds the caller's value.  The slot the game reads as
+ * 0x150(sp) after its prologue therefore sits at 0x150 - 0x1D0 from the sp seen here.
+ * Getting this wrong reads unrelated stack and silently finds nothing to report. */
+#define LANG_CFG_FROM_ENTRY_SP ((int)LANG_CFG_OFF - (int)LANG_FRAME)
 
 /* The four instructions the probe depends on, as the Japanese build encodes them.  This
  * is what proves the address is the decision and not merely somewhere in .text. */
@@ -46,6 +58,7 @@ static int lang_probed;
 static unsigned lang_calls;
 static u32 lang_last;
 static int lang_have_last;
+static int lang_said;
 
 /* The hook layer can only attach at a function entry, not mid-function, so this sits on
  * the function and samples the config pointer from the frame it is entered with.  The
@@ -55,11 +68,18 @@ static int lang_have_last;
  * Logged on the first few calls and then only when the value changes, because this
  * function runs for every radio track and a line per call would bury the log. */
 static int lang_probe(ps2_ctx *ctx, void *u) {
-    u32 cfg, field, v;
+    u32 cfg, field, v, slot;
     (void)u;
 
     lang_calls++;
-    cfg = ps2_r32(ctx->r[29].ud[0] + LANG_CFG_OFF);
+    slot = (u32)((s32)ctx->r[29].ud[0] + LANG_CFG_FROM_ENTRY_SP);
+    cfg = ps2_r32(slot);
+    /* Report the raw slot too: if the offset is wrong this is what shows it, and a
+     * probe that only prints when it is right says nothing when it is wrong. */
+    if (!lang_said || lang_calls <= 3u)
+        ps2_log("lang: call %u  sp %08X  slot %08X -> cfg %08X",
+                lang_calls, ctx->r[29].ud[0], slot, cfg);
+    lang_said = 1;
     if (!cfg || cfg >= 0x02000000u) return 0;
     field = cfg + LANG_FIELD;
     v = ps2_r8(field);
@@ -69,6 +89,31 @@ static int lang_probe(ps2_ctx *ctx, void *u) {
     ps2_log("lang: call %u  config %08X  language byte %08X = %u  -> %s",
             lang_calls, cfg, field, v,
             v == 1u ? "RADIOJE.PAC (Japanese)" : "RADIOJJ.PAC (English)");
+    return 0;
+}
+
+/* The second decision, which picks between the two radio files by a quality bit rather
+ * than by language.  It reaches the same two filenames by a different path, so whichever
+ * one runs has to be visible: from the filename alone they cannot be told apart.
+ *
+ * Reported unconditionally for the first few calls, so that a wrong offset shows up as
+ * an implausible number instead of as silence. */
+static int qual_probe(ps2_ctx *ctx, void *u) {
+    u32 cfg, slot, v;
+    static unsigned n;
+    (void)u;
+    n++;
+    if (n > 4u) return 0;
+    slot = (u32)((s32)ctx->r[29].ud[0] + LANG_CFG_FROM_ENTRY_SP);
+    cfg = ps2_r32(slot);
+    if (!cfg || cfg >= 0x02000000u) {
+        ps2_log("qual: call %u  slot %08X -> cfg %08X (not a pointer)", n, slot, cfg);
+        return 0;
+    }
+    v = ps2_r32(cfg + 0xC09Cu);
+    ps2_log("qual: call %u  config %08X  0xC09C = %08X  bit20=%u -> %s",
+            n, cfg, v, (v >> 20) & 1u,
+            (v & 0x00100000u) ? "RADIOJJ.PAC (larger)" : "RADIOJE.PAC");
     return 0;
 }
 
@@ -89,11 +134,12 @@ void rn_lang_probe_init(void) {
             return;
         }
     func = rn_resolve_addr(LANG_FUNC_JP);
-    if (ps2_hook_before(func, lang_probe, NULL, 200, "lang-probe") < 0) {
-        ps2_log("lang: could not hook %08X (the function holding the decision)",
-                func);
-        return;
+    if (ps2_hook_before(func, lang_probe, NULL, 200, "lang-probe") < 0)
+        ps2_log("lang: could not hook %08X", func);
+    {
+        u32 qual = rn_resolve_addr(QUAL_FUNC_JP);
+        if (qual != func && ps2_hook_before(qual, qual_probe, NULL, 200,
+                                           "lang-probe") < 0)
+            ps2_log("lang: could not hook %08X", qual);
     }
-    ps2_log("lang: decision %08X found, sampling from the function at %08X",
-            site, func);
 }
