@@ -110,21 +110,20 @@ static int qual_probe(ps2_ctx *ctx, void *u) {
     (void)u;
     n++;
     if (n > 4u) return 0;
-    /* This is the function that actually chose the file in the run under investigation,
-     * so the absolute storage is read here rather than only at start-up. */
-    ps2_log("qual: call %u  0x000AC09C = %08X  bit20=%u  0x000AC13D = %u",
-            n, ps2_r32(0x000AC09Cu), (ps2_r32(0x000AC09Cu) >> 20) & 1u,
-            ps2_r8(0x000AC13Du));
-    slot = (u32)((s32)ctx->r[29].ud[0] + LANG_CFG_FROM_ENTRY_SP);
-    cfg = ps2_r32(slot);
-    if (!cfg || cfg >= 0x02000000u) {
-        ps2_log("qual: call %u  slot %08X -> cfg %08X (not a pointer)", n, slot, cfg);
-        return 0;
+    /* The base is not absolute: the code is lui v3, 0x000A0000 / addu v3, v3, s4 /
+     * lw v3, 0xC09C(v3), so the storage is 0x000A0000 + s4 + 0xC09C.  Missing the addu
+     * made an earlier version read 0x000AC09C, which is a different place entirely and
+     * read zero in both language settings. */
+    {
+        s32 base = (s32)ctx->r[20].ud[0];
+        u32 abs = (u32)(0x000A0000 + base + 0xC09C);
+        u32 v = ps2_r32(abs);
+        ps2_log("qual: call %u  s4 %08X  abs %08X = %08X  bit20=%u -> %s",
+                n, ctx->r[20].ud[0], abs, v, (v >> 20) & 1u,
+                (v & 0x00100000u) ? "RADIOJJ.PAC" : "RADIOJE.PAC");
     }
-    v = ps2_r32(cfg + 0xC09Cu);
-    ps2_log("qual: call %u  config %08X  0xC09C = %08X  bit20=%u -> %s",
-            n, cfg, v, (v >> 20) & 1u,
-            (v & 0x00100000u) ? "RADIOJJ.PAC (larger)" : "RADIOJE.PAC");
+    slot = (u32)((s32)ctx->r[29].ud[0] + LANG_CFG_FROM_ENTRY_SP);
+    (void)slot;
     return 0;
 }
 
@@ -174,17 +173,6 @@ void rn_lang_probe_init(void) {
             return;
         }
 
-    /* The decision that actually ran reads an absolute address: the code is
-     * lui v1, 0x000A / lw v1, 0xC09C(v1), which is 0x000AC09C.  Reading it here costs
-     * nothing and says whether it is the same storage the language byte lives in. */
-    {
-        u32 abs_cfg = 0x000AC09Cu;
-        u32 v = ps2_r32(abs_cfg);
-        ps2_log("lang: 0x000AC09C = %08X  bit20=%u  -> %s", v, (v >> 20) & 1u,
-                (v & 0x00100000u) ? "RADIOJJ.PAC" : "RADIOJE.PAC");
-        ps2_log("lang: 0x000AC13D = %u (language byte, 1 means Japanese)",
-                ps2_r8(0x000AC13Du));
-    }
     func = rn_resolve_addr(LANG_FUNC_JP);
     if (ps2_hook_before(func, lang_probe, NULL, 200, "lang-probe") < 0)
         ps2_log("lang: could not hook %08X", func);
