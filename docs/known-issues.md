@@ -224,18 +224,40 @@ the subtitle track, which is why they stay Chinese whichever value is chosen.
   outside the native renderer's range), so the hook belongs in the frontend path, with
   `tools/capture.ps1` for the visual side.
 
-## 4. Options menu: the vibration state reads "on" when it is off
+## 4. Vibration does not work at all, and its state always reads "on"
 
-**Symptom.** With VIBRATION highlighted the description says `（当前设定为开启）` while the
-setting is off.
+**Symptom.** The pad never vibrates, whatever the setting, and the Options description
+always says `（当前设定为开启）` however the setting is left.
 
-**What is established.** That text is the game's own state string read back from the saved
-setting, not a translation artifact — the pair `ON` (id 145) / `OFF` (id 146) exists in the
-option-value table. So an off setting is read as on, which is the same shape as the other
-state bugs in this build: a value that is stored but read back from the wrong place.
+**This is a missing feature, not a display fault.** The runtime has **no rumble support of
+any kind**:
 
-This is separate from the description mismatch above and may have a different cause; they
-happened to be visible on the same screen.
+- no call to `SDL_RumbleGamepad` (or any haptic API) anywhere in `runtime/src`
+- no handler for `scePad2SetActDirect` or `scePad2SetActAlign`, which are what a PS2 game
+  uses to drive the pad's two motors
+
+The pad layer at `runtime/src/ps2_hle_pad.c` implements input only: `scePad2Init`, `End`,
+`CreateSocket`, `DeleteSocket`, `Read`, `GetState`, `GetButtonProfile`, `InitDmaDBuff`,
+`LinkDriver`, `GetSide`, `GetSide2`, `CheckDma`, `SetButtonOrder`. Those thirteen are also
+the complete list of pad overrides in `config/cnjp/overrides.json`, so the actuator calls
+run as recompiled guest code and write to a structure that nothing ever reads.
+
+That accounts for both halves of the symptom: no vibration, and a state display that has
+nothing to reflect. The `ON` (id 145) / `OFF` (id 146) pair at `0x0040C510` / `0x0040C518`
+is the game's own state string, so it is not a translation artifact.
+
+**To implement it.** Find `scePad2SetActDirect` and `scePad2SetActAlign` in the
+executable (they sit in the gap between the overridden pad functions — the largest
+uncovered gap is 544 bytes between `hle_scePad2GetState` at `0x0033BF70` and
+`hle_scePad2InitDmaDBuff` at `0x0033C190`), add HLE handlers that read the two actuator
+values, and forward them to `SDL_RumbleGamepad` on the open gamepad. The gamepad handle
+already exists in the video layer (`SDL_OpenGamepad`), so this is a small amount of code
+once the addresses are confirmed.
+
+**Not yet confirmed:** that the game reaches vibration through slus/pad rather than an IOP
+module we HLE away. The log shows the pad modules being serviced natively, which is why the
+input path works; whether the actuator writes happen on the EE side needs checking before
+writing the handlers.
 
 ## Instrumentation that already exists
 
