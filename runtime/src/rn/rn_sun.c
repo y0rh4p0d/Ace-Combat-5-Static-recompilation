@@ -23,9 +23,16 @@ static int role_of(u32 e) {
     if (roles[e] != ROLE_UNKNOWN) return roles[e];
     em = rn_emitter_get(e);
     if (!em || !em->site) return ROLE_NONE;
-    roles[e] = em->site == SITE_CHAIN ? ROLE_CHAIN
-             : em->site == SITE_FLARE ? ROLE_FLARE
-             : em->site == SITE_GHOST ? ROLE_GHOST : ROLE_NONE;
+    /* The three SITE_ constants are reference addresses; em->site is this build's.
+     * Comparing them directly means none of them ever match on a build that moved,
+     * and a failed equality reports nothing -- the sun flare, the lens ghosts and the
+     * occlusion chain would all quietly take the emulated path instead. */
+    {
+        const u32 site = rn_us_addr(em->site);
+        roles[e] = site == SITE_CHAIN ? ROLE_CHAIN
+                 : site == SITE_FLARE ? ROLE_FLARE
+                 : site == SITE_GHOST ? ROLE_GHOST : ROLE_NONE;
+    }
     return roles[e];
 }
 
