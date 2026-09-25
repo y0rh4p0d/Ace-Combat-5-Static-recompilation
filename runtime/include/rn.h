@@ -85,6 +85,9 @@ void rn_vp_init(void);
 int  rn_vp_run(struct ps2_vu *vu, u32 start);
 void rn_vp_kick(struct ps2_vu *vu, u32 addr);
 void rn_vp_report(void);
+/* Probe the game's radio-language decision.  Enabled by PS2_LANG_PROBE=1; see
+ * rn_lang.c for why the value cannot be observed any other way. */
+void rn_lang_probe_init(void);
 /* Print where each native VU1 program was located, once.  Reading the wrong address
  * for them is silent otherwise: no program matches and nothing is logged. */
 void rn_vp_locate_report(void);

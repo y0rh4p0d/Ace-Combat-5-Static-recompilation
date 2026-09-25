@@ -744,6 +744,7 @@ int main(int argc, char **argv) {
     rn_dump_init();
     rn_vp_init();
     rn_vp_locate_report();
+    rn_lang_probe_init();
     rn_intent_init();
     rn_fixes_init();
     if (want_selftest) {

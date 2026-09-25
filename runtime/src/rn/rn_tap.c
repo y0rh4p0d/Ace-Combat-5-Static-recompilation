@@ -123,7 +123,7 @@ u32 rn_resolve_addr(u32 us) {
     return a ? a : us;
 }
 
-/* The reverse of the above, for the tables still written in US addresses.
+/* The reverse of rn_resolve_addr(), for the tables still written in US addresses.
  *
  * Those hold function ranges -- the frontend emitter block in rn_2d.c, for instance --
  * and are tested against an address taken from the running build.  On a build that

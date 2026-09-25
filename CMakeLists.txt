@@ -75,6 +75,7 @@ set(RUNTIME_SOURCES
     # The reverse address map's lookup.  The table it reads is per-build data and is
     # added below, next to the other generated sources.
     runtime/src/rn/rn_revmap.c
+    runtime/src/rn/rn_lang.c
     runtime/src/rn/rn_dump.c
     runtime/src/rn/rn_vp.c
     runtime/src/rn/rn_vp_model.c
@@ -231,7 +232,11 @@ list(REMOVE_ITEM REPLAY_SOURCES runtime/src/ps2_main.c
                                 # translate from.  rn_revmap.c stays in (rn_2d.c links
                                 # it), and the empty stub below stands in for the data.
                                 runtime/src/rn/rn_revmap_data.c
-                                runtime/src/rn/rn_revmap_empty.c)
+                                runtime/src/rn/rn_revmap_empty.c
+                                # A diagnostic that hooks a guest address, so it needs
+                                # rn_resolve_addr and the hook layer, neither of which
+                                # the replay tool has.
+                                runtime/src/rn/rn_lang.c)
 list(APPEND REPLAY_SOURCES runtime/src/ps2_replay.c)
 
 add_executable(gsreplay ${REPLAY_SOURCES})
