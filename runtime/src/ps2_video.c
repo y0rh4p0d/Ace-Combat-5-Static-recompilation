@@ -4393,13 +4393,214 @@ static void test_render_stall(void) {
     SDL_Delay((Uint32)ms);
 }
 
+static int mode_set_w32(int w, int h, float hz);
+static void mode_restore_w32(void);
+static int exclusive_fullscreen_w32(int w, int h, float hz);
+
+/* Exclusive fullscreen without going through SDL.
+ *
+ * SDL asks Windows for exclusive fullscreen with ChangeDisplaySettingsEx() and this
+ * machine refuses it:
+ *
+ *     SDL_SetWindowFullscreen -> FAILED: ChangeDisplaySettingsEx() failed:
+ *                                DISP_CHANGE_FAILED
+ *
+ * while the same mode change through ChangeDisplaySettings() succeeds, including with
+ * CDS_FULLSCREEN.  So the driver will switch modes; that particular call is what it
+ * rejects.  Rather than report exclusive as unavailable, the mode is switched here and
+ * the window is made borderless to match.  A display mode change plus a borderless
+ * window at that mode is what exclusive fullscreen is, and unlike SDL's attempt it works
+ * on this driver.
+ *
+ * SDL is told the window is not fullscreen, because its own fullscreen handling is what
+ * fails; the window is sized and the decor stripped directly instead.
+ */
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+static int mode_active;                  /* a mode change of ours is in effect */
+static DEVMODEW mode_saved, mode_applied;
+
+static int mode_apply(const DEVMODEW *dm) {
+    LONG r;
+    ps2_log("vk: applying %ux%u @ %u Hz, bpp %u, fields %08X",
+            (unsigned)dm->dmPelsWidth, (unsigned)dm->dmPelsHeight,
+            (unsigned)dm->dmDisplayFrequency, (unsigned)dm->dmBitsPerPel,
+            (unsigned)dm->dmFields);
+    r = ChangeDisplaySettingsW((DEVMODEW *)dm, CDS_FULLSCREEN);
+    if (r == DISP_CHANGE_SUCCESSFUL) return 1;
+    ps2_log("vk: ChangeDisplaySettings with CDS_FULLSCREEN returned %ld", (long)r);
+    /* Retry plainly: CDS_FULLSCREEN is a hint about the calling window, and this process
+     * may not present the window Windows expects for it. */
+    r = ChangeDisplaySettingsW((DEVMODEW *)dm, 0);
+    if (r == DISP_CHANGE_SUCCESSFUL) return 1;
+    ps2_log("vk: ChangeDisplaySettings plain returned %ld", (long)r);
+    return 0;
+}
+
+/* Pick a mode the driver actually offers.
+ *
+ * Asking for a refresh rate the mode does not have is refused with DISP_CHANGE_BADMODE,
+ * and the rate the desktop is running at is not necessarily one the fullscreen list
+ * contains -- taking it from SDL and passing it back looked reasonable and was wrong.
+ * The list is enumerated instead, and the nearest offered rate is used. */
+static int mode_pick(DWORD w, DWORD h, float want_hz, DEVMODEW *out) {
+    DEVMODEW dm;
+    DWORD best_hz = 0;
+    int found = 0, i;
+
+    for (i = 0;; i++) {
+        memset(&dm, 0, sizeof dm);
+        dm.dmSize = sizeof dm;
+        if (!EnumDisplaySettingsW(NULL, i, &dm)) break;
+        if (dm.dmBitsPerPel != 32) continue;
+        if (w && h && (dm.dmPelsWidth != w || dm.dmPelsHeight != h)) continue;
+        if (!found || dm.dmDisplayFrequency > best_hz) {
+            *out = dm;
+            best_hz = dm.dmDisplayFrequency;
+            found = 1;
+        }
+    }
+    if (!found) return 0;
+    if (want_hz > 0.0f) {
+        /* Prefer the closest offered rate at or above the requested one. */
+        DWORD target = (DWORD)(want_hz + 0.5f), pick = 0;
+        int have = 0;
+        for (i = 0;; i++) {
+            memset(&dm, 0, sizeof dm);
+            dm.dmSize = sizeof dm;
+            if (!EnumDisplaySettingsW(NULL, i, &dm)) break;
+            if (dm.dmBitsPerPel != 32) continue;
+            if (dm.dmPelsWidth != out->dmPelsWidth || dm.dmPelsHeight != out->dmPelsHeight)
+                continue;
+            if (dm.dmDisplayFrequency < target) continue;
+            if (!have || dm.dmDisplayFrequency < pick) {
+                pick = dm.dmDisplayFrequency;
+                *out = dm;
+                have = 1;
+            }
+        }
+    }
+    return 1;
+}
+
+static int mode_set_w32(int w, int h, float hz) {
+    DEVMODEW dm, saved;
+    if (w <= 0 || h <= 0 || hz <= 0.0f) {
+        /* The settings store "desktop resolution" and "desktop rate" as zero, so the
+         * current mode is the thing being asked for.  Without this the picker below
+         * matched whatever mode came first in the driver's list. */
+        memset(&saved, 0, sizeof saved);
+        saved.dmSize = sizeof saved;
+        if (!EnumDisplaySettingsW(NULL, ENUM_CURRENT_SETTINGS, &saved)) {
+            ps2_log("vk: cannot read the current display mode");
+            return 0;
+        }
+        if (w <= 0 || h <= 0) { w = (int)saved.dmPelsWidth; h = (int)saved.dmPelsHeight; }
+        if (hz <= 0.0f) hz = (float)saved.dmDisplayFrequency;
+    }
+    if (!mode_active) {
+        memset(&saved, 0, sizeof saved);
+        saved.dmSize = sizeof saved;
+        if (EnumDisplaySettingsW(NULL, ENUM_CURRENT_SETTINGS, &saved)) {
+            mode_saved = saved;
+            mode_active = 2;             /* a mode to restore later */
+        }
+    }
+    if (!mode_pick((DWORD)w, (DWORD)h, hz, &dm)) {
+        ps2_log("vk: no display mode matches %dx%d", w, h);
+        return 0;
+    }
+    if (!mode_apply(&dm)) {
+        /* Retry without the rate: some drivers only accept the dimensions. */
+        dm.dmFields &= ~(DWORD)DM_DISPLAYFREQUENCY;
+        if (!mode_apply(&dm)) return 0;
+    }
+    mode_applied = dm;
+    mode_active = 1;
+    return 1;
+}
+
+/* Print the offered modes once.  A refusal is much easier to act on when the list the
+ * driver is willing to switch to is visible next to the mode that was asked for. */
+static void mode_list_w32(void) {
+    DEVMODEW dm;
+    int i, n = 0, shown = 0;
+    for (i = 0;; i++) {
+        memset(&dm, 0, sizeof dm);
+        dm.dmSize = sizeof dm;
+        if (!EnumDisplaySettingsW(NULL, i, &dm)) break;
+        n++;
+        if (dm.dmBitsPerPel != 32) continue;
+        if (shown >= 16) continue;
+        shown++;
+        ps2_log("vk:   mode %ux%u @ %u Hz", (unsigned)dm.dmPelsWidth,
+                (unsigned)dm.dmPelsHeight, (unsigned)dm.dmDisplayFrequency);
+    }
+    ps2_log("vk: the driver lists %d modes (%d at 32 bpp shown)", n, shown);
+}
+
+static void mode_restore_w32(void) {
+    if (mode_active != 1) return;
+    ChangeDisplaySettingsW(&mode_saved, 0);
+    mode_active = 2;
+}
+
+static int exclusive_fullscreen_w32(int w, int h, float hz) {
+    int sw = 0, sh = 0;
+
+    /* Order matters.  Changing the display mode while the window still has its frame and
+     * title bar is refused -- which is what happened when the mode change came first, with
+     * the same call that succeeds from a program that has no such window.  So the window
+     * is taken fullscreen first, without any decorations, and the mode is changed after. */
+    SDL_SetWindowFullscreenMode(window, NULL);
+    if (!SDL_SetWindowFullscreen(window, true)) {
+        ps2_log("vk: could not go borderless fullscreen: %s", SDL_GetError());
+        return 0;
+    }
+    SDL_SetWindowBordered(window, false);
+    SDL_GetWindowSize(window, &sw, &sh);
+    if (getenv("PS2_DISPLAY_MODES")) mode_list_w32();
+
+    if (!mode_set_w32(w, h, hz)) {
+        /* No mode change: borderless stays, which is still fullscreen and is the honest
+         * best this display will do.  Not a failure of the request, just of exclusive. */
+        ps2_log("vk: the display refused the mode change; staying borderless fullscreen");
+        SDL_SetWindowSize(window, sw, sh);
+        swap_dirty = 1;
+        return 1;
+    }
+
+    SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    SDL_SetWindowSize(window, mode_applied.dmPelsWidth, mode_applied.dmPelsHeight);
+    ps2_log("vk: exclusive fullscreen via a display mode change: %ux%u @ %u Hz",
+            (unsigned)mode_applied.dmPelsWidth, (unsigned)mode_applied.dmPelsHeight,
+            (unsigned)mode_applied.dmDisplayFrequency);
+    swap_dirty = 1;
+    return 1;
+}
+#else
+static int mode_set_w32(int w, int h, float hz) { (void)w; (void)h; (void)hz; return 0; }
+static void mode_restore_w32(void) {}
+static int exclusive_fullscreen_w32(int w, int h, float hz) {
+    (void)w; (void)h; (void)hz;
+    return 0;
+}
+#endif
+
 static void apply_window_settings(void) {
     if (window_hidden || !window) return;
     if (ps2_cfg.window_mode == PS2_WIN_WINDOWED) {
+        mode_restore_w32();
         want_fullscreen = 0;
         SDL_SetWindowFullscreen(window, false);
         SDL_SetWindowSize(window, ps2_cfg.window_w, ps2_cfg.window_h);
         SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    } else if (ps2_cfg.window_mode == PS2_WIN_EXCLUSIVE
+               && exclusive_fullscreen_w32(ps2_cfg.fs_w, ps2_cfg.fs_h, ps2_cfg.fs_hz)) {
+        /* Handled without SDL; see exclusive_fullscreen_w32(). */
+        want_fullscreen = 1;
     } else {
         SDL_DisplayMode mode;
         int ok = 0;
@@ -5814,4 +6015,7 @@ void ps2_video_shutdown(void) {
     pthread_mutex_unlock(&list_lock);
     pthread_join(renderer_thread, NULL);
     if (dev) vkDeviceWaitIdle(dev);
+    /* Put the display back if this session changed its mode.  Leaving a desktop at a
+     * game resolution after exit is a poor way to be remembered. */
+    mode_restore_w32();
 }
