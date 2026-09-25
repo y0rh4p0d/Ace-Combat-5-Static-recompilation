@@ -195,12 +195,41 @@ function Extract-Elf($spec) {
 }
 
 # Run the recompiler for one region, unless its output is already there.
+# The reverse address map, generated from the port's map for this region.
+#
+# It describes this executable, so it is per-region data and is rebuilt even when the
+# recompiler output is reused: a build that quietly lacks it still runs, but the
+# renderer can no longer turn one of this build's addresses back into a reference
+# address, and every table still written in reference addresses stops matching -- with
+# nothing logged, because a failed comparison and a failed range test say nothing.
+function Update-ReverseMap([string]$region, [string]$genDir) {
+    if ($region -eq 'us') {
+        # The US build is the reference build: nothing moves, so it needs no table and
+        # CMake compiles an empty one.  Generating one here would be actively wrong.
+        return
+    }
+    $cfgDir = 'config/cnjp'
+    $map = Join-Path $root "$cfgDir\addr_map.json"
+    if (-not (Test-Path $map)) {
+        Write-Host "-- WARNING: $cfgDir\addr_map.json is missing." -ForegroundColor Yellow
+        Write-Host "   The reverse address map cannot be generated, so the build gets an" -ForegroundColor Yellow
+        Write-Host "   empty one and the renderer will not recognise its reference-address" -ForegroundColor Yellow
+        Write-Host "   tables.  Regenerate it with the map step in tools/cnjp/." -ForegroundColor Yellow
+        return
+    }
+    Write-Host "-- generating the reverse address map into $genDir"
+    & $python (Join-Path $root 'tools\gen_revmap.py') --map $map `
+             --out (Join-Path $root "$genDir\rn_revmap_data.c") | Write-Host
+    if ($LASTEXITCODE -ne 0) { throw "reverse address map generation failed for $region" }
+}
+
 function Recompile-Guest([string]$region, [string]$elf) {
     $genDir = if ($region -eq 'us') { 'generated' } else { 'generated-cnjp' }
     $cfgDir = if ($region -eq 'us') { 'config' } else { 'config/cnjp' }
 
     if (-not $Recompile -and (Test-Path (Join-Path $root "$genDir\ps2_func_table.c"))) {
         Write-Host "-- reusing $genDir  (pass -Recompile to redo it)"
+        Update-ReverseMap $region $genDir
         return $genDir
     }
     Write-Host "-- recompiling $region guest code into $genDir"
@@ -217,6 +246,7 @@ function Recompile-Guest([string]$region, [string]$elf) {
     )
     & $python @a | Write-Host
     if ($LASTEXITCODE -ne 0) { throw "recompiler failed for $region" }
+    Update-ReverseMap $region $genDir
     return $genDir
 }
 

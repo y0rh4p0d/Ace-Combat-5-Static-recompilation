@@ -320,6 +320,60 @@ patch is disabled when building with clang on Windows, because clang's SEH write
 and that flag disagree about prologue sizes and the AArch64 build fails with
 `Incorrect size for func_... prologue`.
 
+## Why the picture was still wrong after that
+
+With the black screen fixed, the picture was still broken -- the sky in fragments, large
+streaks across the water. The cause was one mistake in five different shapes: **comparing
+an address from the running build against a table written in the reference build's
+addresses.** Every one of them fails silently, because a failed comparison reports
+nothing; the affected part of the renderer just quietly falls back to the emulated path.
+
+Four were address *comparisons*:
+
+| Where | What it covers | What it looked like |
+|---|---|---|
+| the sky dome's `seg` table | the sky | the dome was built from 32 zero-length segments, so the sky went **black** |
+| the frontend range in `rn_2d.c` | menus and UI | frontend draws were treated as world geometry |
+| thirteen ranges in `rn_screen.c` | sky passes, sun, clouds, self-shadow, **the whole effect system** | all fell back to the emulated path |
+| three constants in `rn_sun.c` | sun flare, lens ghosts, occlusion chain | the same |
+
+The fifth was an address *read*, and the most deceptive of the lot. The renderer gives
+the emulated VU1 the game's own microprograms by copying instruction words out of guest
+memory, and it read them from the reference build's `.vutext` addresses. The Japanese
+executable relocates that whole section by **+0x340**, so it was reading unrelated bytes,
+its parse found no upload command, each program reported **zero instruction pairs**, and
+every upload was then rejected. **No native VU1 geometry ran at all.** That is why fixing
+the composition layer four times changed nothing you could see: the native taps were
+receiving no work to compose.
+
+All five now locate their target by **content** rather than assuming a shift -- a
+microprogram begins with a `0x60` opcode word, the sky's circle table begins
+`0.0, 1.0, sin(pi/16), cos(pi/16)`, and both hold at the right address and not at the
+wrong one.
+
+## Translating an address back
+
+All of that needs one capability: turning an address in the running build back into a
+reference address. The runtime never had it -- only a handful of forward mappings, one
+per name.
+
+The port's whole address map is now compiled in (`tools/gen_revmap.py` produces
+`rn_revmap_data.c`: about 25000 intervals covering 97.7% of `.text`). Three things about
+it are worth knowing, because each is a trap:
+
+- **It is per-build data.** Compiling one build's table into the other makes that build
+  translate its own addresses as if they had moved, which is silently wrong and worse
+  than not translating at all. It is generated into each region's output directory, and
+  an absent table compiles to an empty one whose lookups return their input -- correct
+  for a build where nothing moved.
+- **The forward map is not one-to-one.** In 204 zones, two source intervals with
+  different deltas land on the same target bytes. The reverse has no answer there, so
+  those zones are dropped and the lookups miss, which callers treat as "keep what you
+  had". Guessing an answer is the one thing this must not do.
+- **The sign is easy to get backwards** and the table still looks entirely plausible:
+  writing the delta as `source - target` instead of `target - source` makes every
+  translation wrong by twice the offset. It was caught only by checking known pairs.
+
 ## Building for Windows on ARM
 
 The same `ac5.exe` builds for AArch64. It needs an x86_64 clang driver to cross
